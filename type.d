@@ -803,10 +803,12 @@ enum Annotation{
 }
 static if(language==silq) enum deterministic=Annotation.qfree;
 static if(language==psi) enum deterministic=Annotation.none;
+static if(language==dp) enum deterministic=Annotation.none;
 
 string annotationToString(Annotation annotation){
 	static if(language==silq) return annotation?text(annotation):"";
 	static if(language==psi) return "";
+	static if(language==dp) return "";
 }
 
 class RawProductTy: Expression{

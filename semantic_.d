@@ -403,7 +403,9 @@ bool isBuiltIn(Identifier id){
 		case "Marginal","sampleFrom":
 		case "Expectation":
 			return true;
-	}else static assert(0);
+	} else static if(language==dp) {
+		// no additional cases	
+	} else static assert(0);
 	case "*","𝟙","𝟚","B","𝔹","N","ℕ","Z","ℤ","Q","ℚ","R","ℝ","C","ℂ":
 		return true;
 	default: return false;
