@@ -408,6 +408,8 @@ bool isBuiltIn(Identifier id){
 	} else static assert(0);
 	case "*","𝟙","𝟚","B","𝔹","N","ℕ","Z","ℤ","Q","ℚ","R","ℝ","C","ℂ":
 		return true;
+	case "string", "any":
+		return true;
 	default: return false;
 	}
 }
@@ -424,6 +426,7 @@ Expression builtIn(Identifier id,Scope sc){
 	Expression t=null;
 	switch(id.name){
 	case "readCSV": t=funTy(stringTy(true),arrayTy(ℝ(true)),false,false,true); break;
+
 	case "π","pi": t=ℝ(true); break;
 	case "Marginal","sampleFrom","quantumPrimitive","__query","__show": t=unit; break; // those are actually magic polymorphic functions
 	case "Expectation": t=funTy(ℝ(false),ℝ(false),false,false,true); break; // TODO: should be lifted
@@ -437,6 +440,10 @@ Expression builtIn(Identifier id,Scope sc){
 		if(id.name=="Q"||id.name=="ℚ") return ℚt(false);
 		if(id.name=="R"||id.name=="ℝ") return ℝ(false);
 		if(id.name=="C"||id.name=="ℂ") return ℂ(false);
+	case "string", "any":
+		id.type=typeTy();
+		if(id.name=="string") return stringTy(true);
+		if (id.name=="any") return anyTy(true);
 	default: return null;
 	}
 	id.type=t;

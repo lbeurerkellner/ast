@@ -93,6 +93,13 @@ abstract class Type: Expression{
 	abstract override bool opEquals(Object r);
 	abstract override bool isClassical();
 	override Annotation getAnnotation(){ return Annotation.qfree; }
+
+	override bool isSubtypeImpl(Expression other) {
+		if (auto anyType = cast(AnyTy)other) {
+			return true;
+		}
+		return super.isSubtypeImpl(other);
+	}
 }
 
 class ErrorTy: Type{
@@ -760,6 +767,41 @@ static Expression elementType(Expression ty){
 	if(auto at=cast(ArrayTy)ty) return at.next;
 	if(auto vt=cast(VectorTy)ty) return vt.next;
 	return null;
+}
+
+class AnyTy : Type {
+	static if(language==silq) bool classical;
+	else enum classical=true;
+	private this(bool classical){
+		static if(language==silq) this.classical=classical;
+	}
+	override AnyTy copyImpl(CopyArgs args){
+		return this;
+	}
+	override string toString(){
+		static if(language==silq) return classical?"!any":"any";
+		else return "any";
+	}
+	override bool opEquals(Object o){
+		return !!cast(AnyTy)o;
+	}
+	override bool isClassical(){
+		return classical;
+	}
+	override bool hasClassicalComponent(){
+		// TODO Luca: not clear
+		return true;
+	}
+	override Expression evalImpl(Expression ntype){ return this; }
+	mixin VariableFree;
+	override int componentsImpl(scope int delegate(Expression) dg){
+		return 0;
+	}
+}
+
+AnyTy anyTy(bool classical=true){
+	static if(language==silq) return memoize!((bool classical)=>new AnyTy(classical))(classical);
+	else return memoize!(()=>new AnyTy(true));
 }
 
 class StringTy: Type{
