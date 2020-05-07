@@ -758,7 +758,7 @@ class VectorTy: Type, ITupleTy{
 
 VectorTy vectorTy(Expression next,Expression num)in{
 	assert(next&&next.type==typeTy);
-	assert(num&&isSubtype(num.type,ℕt(true)));
+	assert(num&&(isSubtype(num.type,ℕt(true)) || cast(TypeTy) num.type !is null) );
 }body{
 	return memoize!((Expression next,Expression num)=>new VectorTy(next,num))(next,num);
 }

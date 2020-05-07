@@ -2294,33 +2294,44 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 		return e;
 	}
 
-	Expression handleBinary(alias determineType)(string name,Expression e,ref Expression e1,ref Expression e2){
-		e1=expressionSemantic(e1,sc,ConstResult.yes);
-		e2=expressionSemantic(e2,sc,ConstResult.yes);
-		propErr(e1,e);
-		propErr(e2,e);
-		if(e.sstate==SemState.error)
-			return e;
-		if(e1.type==typeTy&&name=="power"){
-			/+if(auto le=cast(LiteralExp)e2){
-				if(le.lit.type==Tok!"0"){
-					if(!le.lit.str.canFind(".")){
-						auto n=ℤ(le.lit.str);
-						if(0<=n&&n<long.max)
-							return tupleTy(e1.repeat(cast(size_t)n.toLong()).array);
-					}
-				}
+	// performs the semantic processing for typing (multi-axes) shape expressions as embedded VectorTy s
+	Expression tensorTypeSemantic(Expression dtype, Expression shape, Scope sc) {
+		if (auto binExp = cast(BinaryExp!(Tok!"×"))shape) {
+			auto dimExprs = findDimExprs(binExp, sc);
+			foreach (dim; dimExprs) {
+				expressionSemantic(dim,sc,ConstResult.yes);
 			}
-			sc.error("expected non-negative integer constant",e2.loc);
-			e.sstate=SemState.error;+/
-			if(!isSubtype(e2.type,ℕt(true))){
-				sc.error(format("vector length should be of type !ℕ, not %s",e2.type), e2.loc);
+			return buildVectorTyFromShape(dtype, dimExprs, sc);
+		} else {
+			Expression type=expressionSemantic(shape, sc, ConstResult.yes);
+			if (isSubtype(shape.type, ℕt(true))) {
+				return vectorTy(dtype, shape);
+			} else {
+				sc.error(format("vector length should be of type !ℕ, not %s", shape.type), shape.loc);
+				return null;
+			}
+		}
+	}
+
+	Expression handleBinary(alias determineType)(string name,Expression e,ref Expression e1,ref Expression e2){
+		Expression typeE1=expressionSemantic(e1,sc,ConstResult.yes);
+		propErr(typeE1,e);
+		if(e.sstate==SemState.error) {
+			return e;
+		}
+		if(typeE1.type==typeTy&&name=="power"){
+			if (auto vt = tensorTypeSemantic(typeE1, e2, sc)) {
+				propErr(vt,e);
+				return vt;
+			} else {
 				e.sstate=SemState.error;
-			}else return vectorTy(e1,e2);
-		}else{
-			e.type = determineType(e1.type,e2.type);
+			}
+		} else {
+			Expression typeE2=expressionSemantic(e2,sc,ConstResult.yes);
+			propErr(typeE2,e);
+			e.type = determineType(typeE1.type,typeE2.type);
 			if(!e.type){
-				sc.error(format("incompatible types %s and %s for %s",e1.type,e2.type,name),e.loc);
+				sc.error(format("incompatible types %s and %s for %s",typeE1.type,typeE2.type,name),e.loc);
 				e.sstate=SemState.error;
 			}
 		}
@@ -2405,6 +2416,7 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 		expr.type=typeTy();
 		auto t1=typeSemantic(pr.e1,sc);
 		auto t2=typeSemantic(pr.e2,sc);
+		
 		if(!t1||!t2){
 			expr.sstate=SemState.error;
 			return expr;
@@ -2563,6 +2575,28 @@ Expression conditionSemantic(bool allowQuantum=false)(Expression e,Scope sc){
 	return e;
 }
 
+// traverses the tree of BinaryExp at shapeExpression and 
+// returns a flat list of Expressions
+Expression[] findDimExprs(Expression shapeExpression, Scope sc) {
+	if (cast(LiteralExp) shapeExpression !is null) {
+		return [shapeExpression];
+	} if (cast(Identifier) shapeExpression !is null) {
+		return [shapeExpression];	
+	} else if (auto binExp = cast(BinaryExp!(Tok!"×"))shapeExpression) {
+		return findDimExprs(binExp.e1, sc) ~ [binExp.e2];
+	} else {
+		sc.error(format("Invalid tensor dimension type %s",shapeExpression.type), shapeExpression.loc);
+		return [];
+	}
+}
+
+VectorTy buildVectorTyFromShape(Expression dtype, Expression[] shape, Scope sc) {
+	if (shape.length == 1) {
+		return vectorTy(dtype, shape[0]);
+	} else {
+		return vectorTy(buildVectorTyFromShape(dtype, shape[1..$], sc), shape[0]);
+	}
+}
 
 bool setFtype(FunctionDef fd){
 	if(fd.ftype) return true;
