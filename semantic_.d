@@ -2313,25 +2313,30 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 		}
 	}
 
-	Expression handleBinary(alias determineType)(string name,Expression e,ref Expression e1,ref Expression e2){
-		Expression typeE1=expressionSemantic(e1,sc,ConstResult.yes);
-		propErr(typeE1,e);
+	Expression handleBinary(alias determineType)(string name,ABinaryExp e,ref Expression e1,ref Expression e2){
+		Expression processedE1=expressionSemantic(e1,sc,ConstResult.yes);
+		propErr(processedE1,e);
+		e.e1 = processedE1;
+		
 		if(e.sstate==SemState.error) {
 			return e;
 		}
-		if(typeE1.type==typeTy&&name=="power"){
-			if (auto vt = tensorTypeSemantic(typeE1, e2, sc)) {
+		if(processedE1.type==typeTy&&name=="power"){
+			if (auto vt = tensorTypeSemantic(processedE1, e2, sc)) {
 				propErr(vt,e);
+				e.type = vt;
 				return vt;
 			} else {
 				e.sstate=SemState.error;
+				return e;
 			}
 		} else {
-			Expression typeE2=expressionSemantic(e2,sc,ConstResult.yes);
-			propErr(typeE2,e);
-			e.type = determineType(typeE1.type,typeE2.type);
+			Expression processedE2=expressionSemantic(e2,sc,ConstResult.yes);
+			propErr(processedE2,e);
+			e.type = determineType(processedE1.type,processedE2.type);
+			e.e2 = processedE2;
 			if(!e.type){
-				sc.error(format("incompatible types %s and %s for %s",typeE1.type,typeE2.type,name),e.loc);
+				sc.error(format("incompatible types %s and %s for %s",processedE1.type,processedE2.type,name),e.loc);
 				e.sstate=SemState.error;
 			}
 		}

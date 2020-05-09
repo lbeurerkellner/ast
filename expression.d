@@ -1314,7 +1314,7 @@ class LambdaExp: Expression{
 	}
 	override string toString(){
 		string d=fd.isSquare?"[]":"()";
-		return _brk(d[0]~join(map!(to!string)(fd.params),",")~d[1]~fd.body_.toStringFunctionDef());
+		return _brk(d[0]~join(map!(to!string)(fd.params),",")~d[1]~(fd.body_ !is null ? fd.body_.toStringFunctionDef() : " null "));
 	}
 
 	mixin VariableFree; // TODO!
