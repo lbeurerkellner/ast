@@ -61,6 +61,7 @@ bool isRat(Expression e){ return preludeNumericTypeName(e)=="rat"; }
 
 bool isSubtype(Expression lhs,Expression rhs){
 	if(!lhs||!rhs) return false;
+	if(cast(AnyTy)rhs !is null) return true;
 	auto l=lhs.eval(), r=rhs.eval();
 	auto wl=whichNumeric(l), wr=whichNumeric(r);
 	if(!lhs.isClassical()&&rhs.isClassical()) return false;
