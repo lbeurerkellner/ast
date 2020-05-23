@@ -894,6 +894,12 @@ class ProductTy: Type{
 		bool isClassical_;
 		private ProductTy classicalTy;
 	}else enum isClassical_=true;
+
+	static if(language==dp){
+		bool isParameterized=false;
+		bool isInitialised=false;
+	}
+
 	private this(bool[] isConst,string[] names,Expression dom,Expression cod,bool isSquare,bool isTuple,Annotation annotation,bool isClassical_)in{
 		// TODO: assert that all names are distinct
 		if(isTuple){

@@ -93,6 +93,9 @@ enum Lookup{
 
 abstract class Scope{
 	abstract @property ErrorHandler handler();
+
+	static if (language==dp) bool allowsParameterDefinitions = false;
+
 	bool allowsLinear(){
 		return true;
 	}
@@ -470,7 +473,11 @@ private:
 class NestedScope: Scope{
 	Scope parent;
 	override @property ErrorHandler handler(){ return parent.handler; }
-	this(Scope parent){ this.parent=parent; }
+	this(Scope parent){ 
+		this.parent=parent; 
+		//TODO Luca: Do not pass this property into lambdas
+		if (language==dp) this.allowsParameterDefinitions = parent.allowsParameterDefinitions;
+	}
 	override Declaration lookup(Identifier ident,bool rnsym,bool lookupImports,Lookup kind){
 		if(auto decl=lookupHere(ident,rnsym,kind)) return decl;
 		return parent.lookup(ident,rnsym,lookupImports,kind);

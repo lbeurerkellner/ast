@@ -843,6 +843,10 @@ abstract class ABinaryExp: Expression{
 	override Annotation getAnnotation(){
 		return min(e1.getAnnotation(), e2.getAnnotation());
 	}
+
+	override @property string kind() {
+		return "ABinaryExp";
+	}
 }
 
 class BinaryExp(TokenType op): ABinaryExp{
@@ -861,6 +865,7 @@ class BinaryExp(TokenType op): ABinaryExp{
 			return new BinaryExp!op(e1.copy(args),e2.copy(args));
 		}
 	}
+
 	override string toString(){
 		return _brk(e1.toString() ~ " "~TokChars!op~" "~e2.toString());
 	}
@@ -1479,5 +1484,75 @@ class ForgetExp: Expression{
 	override int componentsImpl(scope int delegate(Expression) dg){
 		if(auto r=dg(var)) return r;
 		return dg(val);
+	}
+}
+
+class ParamDefExp: Expression {
+	Expression definitions;
+	Expression context;
+
+	this(Expression definitions, Expression context) {
+		this.definitions = definitions;
+		this.context = context;
+	}
+	override ParamDefExp copyImpl(CopyArgs args){
+		return new ParamDefExp(definitions.copy(args), context.copy(args));
+	}
+	override string toString(){ return _brk("param "~definitions.toString()); }
+
+	override string kind() { return "param"; }
+
+	override Expression evalImpl(Expression ntype){
+		auto definitionsVal=definitions.eval();
+		auto contextVal=context.eval();
+		return new ParamDefExp(definitionsVal, contextVal);
+	}
+	mixin VariableFree; // TODO
+	override int componentsImpl(scope int delegate(Expression) dg){
+		return dg(definitions);
+	}
+}
+
+class InitExp: Expression{
+	Expression target;
+	this(Expression target){
+		this.target=target;
+	}
+	override InitExp copyImpl(CopyArgs args){
+		return new InitExp(target.copy(args));
+	}
+	override string toString(){ return _brk("init "~target.toString()); }
+
+	override string kind() { return "init"; }
+
+	override Expression evalImpl(Expression ntype){
+		auto targetVal=target.eval();
+		return new InitExp(targetVal);
+	}
+	mixin VariableFree; // TODO
+	override int componentsImpl(scope int delegate(Expression) dg){
+		return dg(target);
+	}
+}
+
+class ParameterSetHandleExp: Expression{
+	Expression target;
+	this(Expression target){
+		this.target=target;
+	}
+	override ParameterSetHandleExp copyImpl(CopyArgs args){
+		return new ParameterSetHandleExp(target.copy(args));
+	}
+	override string toString(){ return _brk(target.toString()~".params"); }
+
+	override string kind() { return "params[]"; }
+
+	override Expression evalImpl(Expression ntype){
+		auto targetVal=target.eval();
+		return new ParameterSetHandleExp(targetVal);
+	}
+	mixin VariableFree; // TODO
+	override int componentsImpl(scope int delegate(Expression) dg){
+		return dg(target);
 	}
 }

@@ -97,6 +97,11 @@ class FunctionDef: Declaration{
 	CompoundExp body_;
 	bool isSquare=false;
 	auto annotation=Annotation.none;
+
+	static if (language==dp) {
+		bool isParameterized = true;
+	}
+
 	this(Identifier name, Parameter[] params, bool isTuple, Expression rret, CompoundExp body_)in{
 		assert(isTuple||params.length==1);
 	}body{
@@ -232,6 +237,11 @@ class DatDecl: Declaration{
 
 abstract class DefExp: Expression{
 	BinaryExp!(Tok!":=") initializer;
+	
+	static if (language==dp) {
+		bool isParamDefinition = false;
+	}
+	
 	this(BinaryExp!(Tok!":=") init){ this.initializer=init; }
 	abstract VarDecl[] decls();
 

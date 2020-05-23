@@ -120,6 +120,7 @@ Expression presemantic(Declaration expr,Scope sc){
 	if(auto fd=cast(FunctionDef)expr){
 		if(fd.fscope_) return fd;
 		auto fsc=new FunctionScope(sc,fd);
+		if (language==dp) fsc.allowsParameterDefinitions = fd.isParameterized;
 		fd.type=unit;
 		fd.fscope_=fsc;
 		declareParameters(fd,fd.isSquare,fd.params,fsc); // parameter variables
@@ -253,7 +254,7 @@ bool isInPrelude(Declaration decl){
 	return decl.scope_.isNestedIn(psc[1]);
 }
 
-Expression makeDeclaration(Expression expr,ref bool success,Scope sc){
+Expression makeDeclaration(Expression expr,ref bool success,Scope sc, bool isParamDefinition = false){
 	if(auto imp=cast(ImportExp)expr){
 		imp.scope_ = sc;
 		auto ctsc=cast(TopScope)sc;
@@ -297,9 +298,20 @@ Expression makeDeclaration(Expression expr,ref bool success,Scope sc){
 			id.scope_=sc;
 			return vd;
 		}
+		static if (language==dp) {
+			if (isParamDefinition && !sc.allowsParameterDefinitions) {
+				sc.error("Cannot declare parameters in non-parameterized function.", be.loc);
+				success=false;
+				expr.sstate=SemState.error;
+				return expr;
+			}
+		}
 		if(auto id=cast(Identifier)be.e1){
 			auto vd=makeVar(id);
 			auto de=new SingleDefExp(vd,be);
+			static if (language==dp) {
+				de.isParamDefinition = isParamDefinition;
+			}
 			de.loc=be.loc;
 			propErr(vd,de);
 			return de;
@@ -311,11 +323,13 @@ Expression makeDeclaration(Expression expr,ref bool success,Scope sc){
 				else goto LnoIdTuple;
 			}
 			auto de=new MultiDefExp(vds,be);
+			static if (language==dp) de.isParamDefinition = isParamDefinition;
 			de.loc=be.loc;
 			foreach(vd;vds) if(vd) propErr(vd,de);
 			return de;
 		}else if(cast(IndexExp)be.e1){
 			auto de=new SingleDefExp(null,be);
+			static if (language==dp) de.isParamDefinition = isParamDefinition;
 			de.loc=be.loc;
 			return de;
 		}else LnoIdTuple:{
@@ -746,6 +760,23 @@ Expression statementSemantic(Expression e,Scope sc)in{
 		return ae;
 	}
 	if(auto fe=cast(ForgetExp)e) return expressionSemantic(fe,sc,ConstResult.yes);
+
+	static if (language==dp) {
+		if (auto paramExp=cast(ParamDefExp)e){
+			paramExp.definitions = statementSemantic(paramExp.definitions,sc);
+			paramExp.context = paramExp.context?expressionSemantic(paramExp.context,sc,ConstResult.yes):null;
+
+			if (paramExp.context !is null) {
+				if (!(isSubtype(paramExp.context.type, ℕt) || isSubtype(paramExp.context.type, stringTy))) {
+					sc.error(format("parameter context must be a natural number or string not %s", paramExp.context.type.toString()),paramExp.context.loc);
+					paramExp.context.sstate=SemState.error;
+				}
+			}
+
+			return paramExp;
+		}
+	}
+
 	sc.error("not supported at this location",e.loc);
 	e.sstate=SemState.error;
 	return e;
@@ -1936,6 +1967,17 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 				}
 			}
 		}
+		static if (language==dp) {
+			if (auto funTy=cast(FunTy)fe.e.type) {
+				if (funTy.isParameterized && funTy.isInitialised) {
+					if(fe.f.name=="params"){
+						auto paramExp = new ParameterSetHandleExp(fe.e);
+						paramExp.type = anyTy;
+						return expr=paramExp;
+					}else return noMember();
+				}
+			}
+		}
 		if(aggrd){
 			if(aggrd.body_.ascope_){
 				auto meaning=aggrd.body_.ascope_.lookupHere(fe.f,false,Lookup.consuming);
@@ -2562,6 +2604,24 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 		default: break; // TODO
 		}
 	}
+	if(auto initExp=cast(InitExp)expr){
+		initExp.target=expressionSemantic(initExp.target, sc, ConstResult.yes);
+		propErr(initExp.target, initExp);
+		initExp.type=unit;
+
+		if (auto funType = cast(FunTy)initExp.target.type) {
+			Expression.CopyArgs args;
+			args.preserveSemantic = true;
+			auto initialisedType = funType.copyImpl(args);
+			initialisedType.isParameterized = true;
+			initialisedType.isInitialised = true;
+			initExp.type = initialisedType;
+		} else {
+			sc.error(format("cannot initialize expressions of type %s",initExp.target.type),initExp.target.loc);
+			initExp.sstate=SemState.error;
+		}
+		return initExp;
+	}
 	if(expr.kind=="expression") sc.error("unsupported",expr.loc);
 	else sc.error(expr.kind~" cannot appear within an expression",expr.loc);
 	expr.sstate=SemState.error;
@@ -2621,6 +2681,11 @@ bool setFtype(FunctionDef fd){
 	assert(fd.isTuple||pty.length==1);
 	auto pt=fd.isTuple?tupleTy(pty):pty[0];
 	fd.ftype=productTy(pc,pn,pt,fd.ret,fd.isSquare,fd.isTuple,fd.annotation,!fd.context||fd.context.vtype==contextTy(true));
+
+	if (language==dp) {
+		fd.ftype.isParameterized = fd.isParameterized;
+	}
+
 	assert(fd.retNames==[]);
 	if(!fd.retNames) fd.retNames = new string[](fd.numReturns);
 	assert(fd.fscope_||fd.sstate==SemState.error);

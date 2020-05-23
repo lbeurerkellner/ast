@@ -680,6 +680,7 @@ struct Parser{
 	}
 	Expression parseExpression(int rbp = 0,bool allowLambda=true,bool statement=false){
 		switch(ttype){
+			static if (language==dp) case Tok!"noparam": return parseNoParamFunctionDef();
 			case Tok!"def": return parseFunctionDef();
 			case Tok!"dat": return parseDatDecl();
 			case Tok!"import": return parseImport();
@@ -692,6 +693,8 @@ struct Parser{
 			static if(language==psi) case Tok!"observe": return parseObserve();
 			static if(language==psi) case Tok!"cobserve": return parseCObserve();
 			static if(language==silq) case Tok!"forget": return parseForget();
+			static if (language==dp) case Tok!"param": return parseParam();
+			static if (language==dp) case Tok!"init": return parseInit();
 			default: break;
 		}
 		Expression left;
@@ -741,6 +744,12 @@ struct Parser{
 		}
 		expect(Tok!"}");
 		return res=New!T(s.data);
+	}
+	static if (language==dp) FunctionDef parseNoParamFunctionDef() {
+		expect(Tok!"noparam");
+		auto fd = parseFunctionDef();
+		fd.isParameterized=false;
+		return fd;
 	}
 	FunctionDef parseFunctionDef(bool lambda=false,bool semicolon=!lambda)(){
 		mixin(SetLoc!FunctionDef);
@@ -998,6 +1007,30 @@ struct Parser{
 		}
 		expect(Tok!")");
 		return res=New!ForgetExp(var,val);
+	}
+	static if(language==dp) ParamDefExp parseParam(){
+		mixin(SetLoc!ParamDefExp);
+		Expression paramContext = null;
+		expect(Tok!"param");
+		if (ttype== Tok!"[") {
+			expect(Tok!"[");
+			paramContext = parseExpression();
+			expect(Tok!"]");
+		}
+
+		auto loc = tok.loc;
+		if (auto defExp = cast(BinaryExp!(Tok!":="))parseExpression()) {
+			return res=New!ParamDefExp(defExp, paramContext);
+		} else {
+			error("expected variable declaration (:=)",loc);
+			return null;
+		}
+	}
+	static if(language==dp) InitExp parseInit(){
+		mixin(SetLoc!InitExp);
+		expect(Tok!"init");
+		auto target = parseExpression();
+		return res=New!InitExp(target);
 	}
 };
 
