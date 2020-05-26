@@ -8,9 +8,10 @@ import ast.lexer, ast.parser, ast.scope_, ast.type, ast.declaration, util;
 import astopt;
 
 enum SemState{
-	initial,
-	started,
-	completed,
+	raw, // before presemantic 
+	presemantic, // before semantic, default
+	started, // during semantic
+	completed, // after semantic
 	error,
 }
 
@@ -20,7 +21,7 @@ abstract class Node{
 	abstract @property string kind();
 
 	// semantic information
-	SemState sstate;
+	SemState sstate = SemState.presemantic;
 }
 
 
@@ -1556,3 +1557,32 @@ class ParameterSetHandleExp: Expression{
 		return dg(target);
 	}
 }
+
+class ManifoldMoveExp: Expression{
+	Expression target;
+	ManifoldTy manifoldTy;
+
+	this(Expression target, ManifoldTy manifoldTy){
+		this.target=target;
+		this.manifoldTy = manifoldTy;
+	}
+	override ManifoldMoveExp copyImpl(CopyArgs args){
+		return new ManifoldMoveExp(target.copy(args), manifoldTy.copy(args));
+	}
+	override string toString(){ return _brk(target.toString()~".move"); }
+
+	override string kind() { return "manifold move op"; }
+
+	override Expression evalImpl(Expression ntype){
+		auto targetVal=target.eval();
+		return new ManifoldMoveExp(targetVal, manifoldTy);
+	}
+	mixin VariableFree; // TODO
+	override int componentsImpl(scope int delegate(Expression) dg){
+		if (auto res = dg(target)) {
+			return res;
+		}
+		return dg(manifoldTy);
+	}
+}
+

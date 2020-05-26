@@ -420,6 +420,8 @@ abstract class Scope{
 
 	abstract FunctionDef getFunction();
 	abstract DatDecl getDatDecl();
+	abstract ManifoldDecl getManifoldDecl();
+
 	final int all(T)(int delegate(T) dg){
 		foreach(k,v;symtab){
 			auto t=cast(T)v;
@@ -466,6 +468,7 @@ class TopScope: Scope{
 	}
 	override FunctionDef getFunction(){ return null; }
 	override DatDecl getDatDecl(){ return null; }
+	override ManifoldDecl getManifoldDecl(){ return null; }
 private:
 	Scope[] imports; // TODO: local imports, import declarations
 }
@@ -505,6 +508,7 @@ class NestedScope: Scope{
 
 	override FunctionDef getFunction(){ return parent.getFunction(); }
 	override DatDecl getDatDecl(){ return parent.getDatDecl(); }
+	override ManifoldDecl getManifoldDecl(){ return parent.getManifoldDecl(); }
 }
 
 class RawProductScope: NestedScope{
@@ -570,4 +574,31 @@ class AggregateScope: NestedScope{
 	override bool allowsLinear(){
 		return false; // TODO!
 	}
+}
+
+class ManifoldDeclScope: NestedScope {
+	ManifoldDecl decl;
+	override bool allowsLinear(){
+		return false;
+	}
+	this(Scope parent,ManifoldDecl decl){
+		super(parent);
+		this.decl=decl;
+	}
+
+	override ManifoldDecl getManifoldDecl(){ return decl; }
+}
+
+Scope findTopMostScope(Scope sc) {
+	Scope parent = sc;
+	Scope currentScope = null;
+	while (parent !is null) {
+		currentScope = parent;
+		if (auto nestedScope = cast(NestedScope)currentScope) {
+			parent = nestedScope.parent;
+		} else {
+			parent = null;
+		}
+	}
+	return currentScope;
 }

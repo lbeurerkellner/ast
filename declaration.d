@@ -381,3 +381,64 @@ class ImportExp: Declaration{
 	override string toString(){ return "import "~e.map!(to!string).join(","); }
 	override bool isLinear(){ return false; }
 }
+
+class ManifoldDecl : Declaration {
+	Identifier typeName;
+	CompoundExp body_;
+	
+	Expression tangentVecExp;
+	Expression tangentZeroExp;
+	FunctionDef moveOpDef;
+
+	VarDecl thisVar;
+	ManifoldDeclScope declScope;
+
+	// requires presemantic processing
+	SemState sstate = SemState.raw;
+
+	// the corresponding manifold type
+	ManifoldTy mtype;
+
+	this(Identifier typeName, CompoundExp body_){
+		import std.format;
+		auto manifoldDeclId = new Identifier("manifold " ~ typeName.name);
+		manifoldDeclId.loc = typeName.loc;
+		super(manifoldDeclId);
+
+		this.typeName = typeName;
+		this.body_ = body_;
+		
+		// determined in presemantic step
+		this.moveOpDef = null;
+		this.tangentVecExp = null;
+		this.tangentZeroExp = null;
+	}
+
+	private this(Identifier name, CompoundExp body_, FunctionDef moveOpDef, Expression tangentVecExp, Expression tangentZeroExp, ManifoldDeclScope declScope){
+		super(name);
+		this.body_ = body_;
+		
+		// determined from body_ in presemantic step
+		this.moveOpDef = moveOpDef;
+		this.tangentVecExp = tangentVecExp;
+		this.tangentZeroExp = tangentZeroExp;
+		this.declScope = declScope;
+	}
+
+	override ManifoldDecl copyImpl(CopyArgs args){
+		return new ManifoldDecl(name.copy(), body_.copy(), moveOpDef.copy(), tangentVecExp.copy(), tangentZeroExp.copy(), declScope);
+	}
+
+	override @property string kind(){ return "manifold"; }
+
+	override string toString(){
+		return "manifold " ~ typeName.toString() ;
+	}
+	override bool opEquals(Object o){
+		return o == this;
+	}
+	override Expression evalImpl(Expression ntype){ return this; }
+	override bool isLinear(){ return false; }
+
+	override bool isCompound(){ return true; }
+}

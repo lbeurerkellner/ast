@@ -693,6 +693,7 @@ struct Parser{
 			static if(language==psi) case Tok!"observe": return parseObserve();
 			static if(language==psi) case Tok!"cobserve": return parseCObserve();
 			static if(language==silq) case Tok!"forget": return parseForget();
+			static if (language==dp) case Tok!"manifold": return parseManifoldDecl();
 			static if (language==dp) case Tok!"param": return parseParam();
 			static if (language==dp) case Tok!"init": return parseInit();
 			default: break;
@@ -1031,6 +1032,14 @@ struct Parser{
 		expect(Tok!"init");
 		auto target = parseExpression();
 		return res=New!InitExp(target);
+	}
+	static if(language==dp) ManifoldDecl parseManifoldDecl(){
+		mixin(SetLoc!ManifoldDecl);
+		expect(Tok!"manifold");
+		auto name=parseIdentifier();
+		auto body_=parseCompoundExp!CompoundExp();
+
+		return res=New!ManifoldDecl(name, body_);
 	}
 };
 

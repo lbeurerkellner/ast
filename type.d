@@ -5,7 +5,7 @@ import astopt;
 
 import std.array, std.algorithm, std.conv;
 import std.functional, std.range;
-import ast.expression, ast.declaration, util;
+import ast.expression, ast.declaration, ast.semantic_, ast.scope_, util;
 
 bool isSameType(Expression lhs,Expression rhs){
 	return lhs.eval() == rhs.eval(); // TODO: evaluation context?
@@ -62,6 +62,8 @@ bool isRat(Expression e){ return preludeNumericTypeName(e)=="rat"; }
 bool isSubtype(Expression lhs,Expression rhs){
 	if(!lhs||!rhs) return false;
 	if(cast(AnyTy)rhs !is null) return true;
+	if(auto lhsAlias=cast(AliasTy)lhs) lhs = lhsAlias.target;
+	if(auto rhsAlias=cast(AliasTy)rhs) rhs = rhsAlias.target;
 	auto l=lhs.eval(), r=rhs.eval();
 	auto wl=whichNumeric(l), wr=whichNumeric(r);
 	if(!lhs.isClassical()&&rhs.isClassical()) return false;
@@ -646,6 +648,11 @@ ArrayTy arrayTy(Expression next)in{
 
 class VectorTy: Type, ITupleTy{
 	Expression next,num;
+
+	static if(language==dp) {
+		Expression dtype;
+	}
+
 	override ITupleTy isTupleTy(){
 		if(cast(LiteralExp)num) return this;
 		return null;
@@ -757,6 +764,17 @@ class VectorTy: Type, ITupleTy{
 	}
 }
 
+VectorTy tensorTy(Expression next, Expression num, Expression dtype){
+	return memoize!((Expression next, Expression num, Expression dtype){
+		auto vecTy = vectorTy(next, num);
+		static if(language==dp) {
+			// convenient access to data type of vector types which 
+			// represent tensor types
+			vecTy.dtype = dtype;
+		}
+		return vecTy;
+	})(next, num, dtype);
+}
 VectorTy vectorTy(Expression next,Expression num)in{
 	assert(next&&next.type==typeTy);
 	assert(num&&(isSubtype(num.type,ℕt(true)) || cast(TypeTy) num.type !is null) );
@@ -1153,10 +1171,11 @@ class ProductTy: Type{
 		if(isTuple&&!r.dom.isTupleTy()) return false;
 		r=r.setTuple(isTuple);
 		if(!r) return false;
-		if(isConst!=r.isConst||isSquare!=r.isSquare||nargs!=r.nargs)
+		if(isConst!=r.isConst||isSquare!=r.isSquare||nargs!=r.nargs) {
+			writeln("const, square or nargs diff");
 			return false;
-		if(annotation<r.annotation||!isClassical&&r.isClassical)
-			return false;
+		}
+		if(annotation<r.annotation||!isClassical&&r.isClassical) return false;
 		auto name=freshName("x",r);
 		auto vars=varTy(name,r.dom);
 		auto lCod=tryApply(vars,isSquare);
@@ -1348,3 +1367,148 @@ class TypeTy: Type{
 }
 private TypeTy theTypeTy;
 TypeTy typeTy(){ return theTypeTy?theTypeTy:(theTypeTy=new TypeTy()); }
+
+class ManifoldTy: Type{
+	Type elementType;
+	FunctionDef moveOpDef;
+	Type tangentVecTy;
+	Expression tangentZeroExp;
+
+	ManifoldDecl manifoldDecl;
+ 
+	this(Type elementType, FunctionDef moveOpDef, Type tangentVecTy, Expression tangentZeroExp){ 
+		super();
+		
+		this.type=typeTy;
+
+		this.elementType = elementType;
+		this.moveOpDef = moveOpDef;
+		this.tangentVecTy = tangentVecTy;
+		this.tangentZeroExp = tangentZeroExp;
+	}
+	override ManifoldTy copyImpl(CopyArgs args){
+		return this;
+	}
+	override string toString(){
+		return "manifold " ~ elementType.toString();
+	}
+	override bool opEquals(Object o){
+		ManifoldTy otherManifoldTy = cast(ManifoldTy)o;
+		if (!otherManifoldTy) return false;
+		return elementType == otherManifoldTy.elementType &&
+			moveOpDef == otherManifoldTy.moveOpDef &&
+			tangentZeroExp == otherManifoldTy.tangentZeroExp &&
+			tangentZeroExp == otherManifoldTy.tangentVecTy &&
+			manifoldDecl == otherManifoldTy.manifoldDecl;
+	}
+	override bool isClassical(){
+		return true;
+	}
+	override bool hasClassicalComponent(){
+		return true;
+	}
+	override Expression evalImpl(Expression ntype){ 
+		return this;
+	}
+	mixin VariableFree;
+	override int componentsImpl(scope int delegate(Expression) dg){
+		return 0;
+	}
+}
+
+ManifoldTy manifoldTy(Type elementType, Scope sc) {
+	import std.format;
+	return memoize!((Type manifoldType, Scope sc){
+		if (auto vectorTy=cast(VectorTy)manifoldType) {
+			/*auto elementType = determineDTypeOfVectorTy(vectorTy);
+			auto elementMType = manifoldTy(elementType, sc);
+			if (!elementMType) {
+				return null;
+			}
+			// construct element-wise tangentVector
+			auto elementWiseTangentVecTy = elementWise!(ty => elementMType.tangentVecTy)(vectorTy);
+			// construct tangentZero using a fill operator (support as built-in in interpreter)
+			auto elementWiseTangentVecTy = makeFill(elementMType.tangentZeroExp, shapeExpression);
+			// construct elementWise move operation using elementWise operator (support as built-in in interpreter)
+			auto elementWiseMoveOpDef = (...)
+
+			return ManifoldTy(vectorTy, elementWiseMoveOpDef, elementWiseTangentVecTy, elementWiseTangentVecTy);*/
+			return null;
+		} else {
+			Identifier manifoldId = new Identifier("manifold " ~ manifoldType.toString());
+			if (auto decl = cast(ManifoldDecl)sc.lookup(manifoldId,false,true,Lookup.probing)) {
+				decl = manifoldDeclSemantic(decl, sc);
+				auto mtype = decl.mtype;
+				if (!mtype) {
+					return null;
+				}
+				return mtype;
+			} else {
+				writeln(format("Could not find manifold declaration for type %s under name %s.", 
+					manifoldType.toString(), manifoldId.toString()));
+				return null;
+			}
+		}	
+	})(elementType,sc);
+}
+
+Type elementWise(pred)(VectorTy vectorTy) {
+	if (auto vecTy=cast(VectorTy)vectorTy.next) {
+		return vectorTy(elementWise!pred(vecTy), vectorTy.num);
+	} else {
+		return pred(elementMType);
+	}
+}
+
+/// returns the underlying data type of a tensor type expression (embedded VectorTys)
+Type determineDTypeOfVectorTy(VectorTy vectorTy) {
+	if (auto vecTy=cast(VectorTy)vectorTy.next) {
+		return determineDTypeOfVectorTy(vecTy);
+	} else {
+		return cast(Type)vectorTy.next;
+	}
+}
+
+
+class AliasTy : Type {
+	string name;
+	Type target;
+	enum classical=true;
+	private this(string name, Type target){
+		this.name = name;
+		this.target = target;
+	}
+	override AliasTy copyImpl(CopyArgs args){
+		return this;
+	}
+	override string toString(){
+		return name ~ " aka " ~ (target ? target.toString() : "null");
+	}
+	override bool opEquals(Object o){
+		auto otherAlias = cast(AliasTy)o;
+		if (!otherAlias) {
+			return false;
+		}
+		return otherAlias.target == target &&
+			otherAlias.name == name;
+	}
+	override bool isClassical(){
+		return classical;
+	}
+	override bool hasClassicalComponent(){
+		return true;
+	}
+	override Expression evalImpl(Expression ntype){ return this; }
+	mixin VariableFree;
+	override int componentsImpl(scope int delegate(Expression) dg){
+		return 0;
+	}
+
+	override bool isSubtypeImpl(Expression other) {
+		return target.isSubtypeImpl(other);
+	}
+}
+
+AliasTy aliasTy(string name, Type target){
+	return memoize!((string name, Type target)=>new AliasTy(name, target))(name, target);
+}
