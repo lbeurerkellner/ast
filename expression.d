@@ -1561,6 +1561,7 @@ class ParameterSetHandleExp: Expression{
 class ManifoldMoveExp: Expression{
 	Expression target;
 	ManifoldTy manifoldTy;
+	bool isPointWise = false;
 
 	this(Expression target, ManifoldTy manifoldTy){
 		this.target=target;
@@ -1585,4 +1586,3 @@ class ManifoldMoveExp: Expression{
 		return dg(manifoldTy);
 	}
 }
-

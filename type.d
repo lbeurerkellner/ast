@@ -648,10 +648,7 @@ ArrayTy arrayTy(Expression next)in{
 
 class VectorTy: Type, ITupleTy{
 	Expression next,num;
-
-	static if(language==dp) {
-		Expression dtype;
-	}
+	Expression dtype;
 
 	override ITupleTy isTupleTy(){
 		if(cast(LiteralExp)num) return this;
@@ -664,6 +661,13 @@ class VectorTy: Type, ITupleTy{
 		auto lit=cast(LiteralExp)num;
 		assert(!!lit);
 		return to!size_t(lit.lit.str); // TODO: avoid crash if length is too big
+	}
+	@property Expression[] shape(){
+		if (auto vecTy=cast(VectorTy)next) {
+			return [num] ~ vecTy.shape;
+		} else {
+			return [num];
+		}
 	}
 	Expression opIndex(size_t i){ return next; }
 	Expression opSlice(size_t l,size_t r){
@@ -764,23 +768,27 @@ class VectorTy: Type, ITupleTy{
 	}
 }
 
-VectorTy tensorTy(Expression next, Expression num, Expression dtype){
+VectorTy vectorTy(Expression next, Expression num, Expression dtype=null)in{
+	assert(next&&next.type==typeTy);
+	assert(num && (isSubtype(num.type,ℕt(true))));	   
+}body{
+	// for simple vector types, dtype == next
+	dtype = dtype ? dtype : next;
 	return memoize!((Expression next, Expression num, Expression dtype){
-		auto vecTy = vectorTy(next, num);
-		static if(language==dp) {
-			// convenient access to data type of vector types which 
-			// represent tensor types
-			vecTy.dtype = dtype;
-		}
+		auto vecTy = new VectorTy(next,num);
+		// convenient access to data type of vector types which 
+		// represent tensor types
+		vecTy.dtype = dtype;
 		return vecTy;
 	})(next, num, dtype);
 }
-VectorTy vectorTy(Expression next,Expression num)in{
+
+/*VectorTy vectorTy(Expression next,Expression num)in{
 	assert(next&&next.type==typeTy);
 	assert(num&&(isSubtype(num.type,ℕt(true)) || cast(TypeTy) num.type !is null) );
 }body{
 	return memoize!((Expression next,Expression num)=>new VectorTy(next,num))(next,num);
-}
+}*/
 
 static Expression elementType(Expression ty){
 	if(auto at=cast(ArrayTy)ty) return at.next;
@@ -1420,20 +1428,28 @@ ManifoldTy manifoldTy(Type elementType, Scope sc) {
 	import std.format;
 	return memoize!((Type manifoldType, Scope sc){
 		if (auto vectorTy=cast(VectorTy)manifoldType) {
-			/*auto elementType = determineDTypeOfVectorTy(vectorTy);
-			auto elementMType = manifoldTy(elementType, sc);
+			Type elementType = cast(Type)vectorTy.dtype;
+			if (!elementType) {
+				return null;
+			}
+			ManifoldTy elementMType = manifoldTy(elementType, sc);
 			if (!elementMType) {
 				return null;
 			}
 			// construct element-wise tangentVector
-			auto elementWiseTangentVecTy = elementWise!(ty => elementMType.tangentVecTy)(vectorTy);
+			Type elementWiseTangentVecTy = vectorTy.replacingElementType(unalias(elementMType.tangentVecTy));
+			elementWiseTangentVecTy = aliasTy("(" ~ vectorTy.toString() ~ ".tangentVector)", elementWiseTangentVecTy);
 			// construct tangentZero using a fill operator (support as built-in in interpreter)
-			auto elementWiseTangentVecTy = makeFill(elementMType.tangentZeroExp, shapeExpression);
+			auto elementWiseTangentVecZero = elementMType.tangentZeroExp; // TODO replace with lambda creating zero-filled tensor
 			// construct elementWise move operation using elementWise operator (support as built-in in interpreter)
-			auto elementWiseMoveOpDef = (...)
 
-			return ManifoldTy(vectorTy, elementWiseMoveOpDef, elementWiseTangentVecTy, elementWiseTangentVecTy);*/
-			return null;
+			Scope manifoldContainerScope = elementMType.manifoldDecl.declScope.parent;
+			auto elementWiseMoveOpDef = makePointWiseMoveOp(elementMType, elementWiseTangentVecTy, manifoldContainerScope);
+
+			auto manifoldTy = new ManifoldTy(vectorTy, elementWiseMoveOpDef, elementWiseTangentVecTy,
+			 	elementWiseTangentVecZero);
+			manifoldTy.manifoldDecl = elementMType.manifoldDecl;
+			return manifoldTy;
 		} else {
 			Identifier manifoldId = new Identifier("manifold " ~ manifoldType.toString());
 			if (auto decl = cast(ManifoldDecl)sc.lookup(manifoldId,false,true,Lookup.probing)) {
@@ -1452,23 +1468,33 @@ ManifoldTy manifoldTy(Type elementType, Scope sc) {
 	})(elementType,sc);
 }
 
-Type elementWise(pred)(VectorTy vectorTy) {
-	if (auto vecTy=cast(VectorTy)vectorTy.next) {
-		return vectorTy(elementWise!pred(vecTy), vectorTy.num);
-	} else {
-		return pred(elementMType);
-	}
+FunctionDef makePointWiseMoveOp(ManifoldTy elementMType, Type tangentVecTy, Scope sc) {
+	assert(elementMType.moveOpDef !is null);
+	assert(elementMType.elementType !is null);
+	assert(elementMType.tangentVecTy !is null);
+	assert(sc !is null);
+
+	// FunctionDef funDef = elementMType.moveOpDef.copy();
+	// funDef = cast(FunctionDef)presemantic(funDef, sc);
+	//funDef = manifoldMoveOpSemantic(funDef, elementMType.elementType, elementMType.tangentVecTy, sc);
+
+	FunctionDef funDef = new PointWiseFunctionDef(new Identifier("move"), [
+		new Parameter(false, new Identifier("along"), tangentVecTy)
+	], false, elementMType.moveOpDef);
+
+	funDef.ftype = productTy([true], ["along"], tangentVecTy, unit, false, false, Annotation.none, true);
+	funDef.type = unit;
+
+	return funDef;
 }
 
-/// returns the underlying data type of a tensor type expression (embedded VectorTys)
-Type determineDTypeOfVectorTy(VectorTy vectorTy) {
-	if (auto vecTy=cast(VectorTy)vectorTy.next) {
-		return determineDTypeOfVectorTy(vecTy);
+VectorTy replacingElementType(VectorTy vecTy, Type elementType) {
+	if (auto nextVecTy=cast(VectorTy)vecTy.next) {
+		return vectorTy(replacingElementType(nextVecTy, elementType), vecTy.num);
 	} else {
-		return cast(Type)vectorTy.next;
+		return vectorTy(elementType, vecTy.num);
 	}
 }
-
 
 class AliasTy : Type {
 	string name;
@@ -1482,7 +1508,7 @@ class AliasTy : Type {
 		return this;
 	}
 	override string toString(){
-		return name ~ " aka " ~ (target ? target.toString() : "null");
+		return "(" ~ name ~ " aka " ~ (target ? target.toString() : "null") ~ ")";
 	}
 	override bool opEquals(Object o){
 		auto otherAlias = cast(AliasTy)o;
@@ -1511,4 +1537,11 @@ class AliasTy : Type {
 
 AliasTy aliasTy(string name, Type target){
 	return memoize!((string name, Type target)=>new AliasTy(name, target))(name, target);
+}
+
+Type unalias(Type type) {
+	if (auto aliasType = cast(AliasTy)type) {
+		return aliasType.target;
+	}
+	return type;
 }

@@ -90,6 +90,37 @@ class Parameter: VarDecl{
 	@property override string kind(){ return "parameter"; }
 }
 
+// TODO: Implement more elegantly or expose in the frontend
+// For now, point-wise FunctionDefs are only used internally and most of their
+// semantic properties are not set correctly. 
+// See ManifoldTy manifoldTy(Type elementType, Scope sc) for the use case.
+class PointWiseFunctionDef: FunctionDef {
+	// actual point-wise definition of the function
+	FunctionDef pointWiseDef;
+
+	// not available for point-wise FunctionDef's
+	Expression rret = null;
+	CompoundExp body_ = null;
+
+	this(Identifier name, Parameter[] params, bool isTuple, FunctionDef pointWiseDef)in{
+		assert(isTuple||params.length==1);
+	}body{
+		super(name, params, isTuple, null, null);
+		this.pointWiseDef = pointWiseDef;
+	}
+
+	override FunctionDef copyImpl(CopyArgs args){
+		enforce(!args.preserveSemantic,"TODO");
+		auto r=new PointWiseFunctionDef(name?name.copy(args):null,params.map!(p=>p.copy(args)).array,isTuple,pointWiseDef.copy(args));
+		r.annotation=annotation;
+		return r;
+	}
+
+	override string toString(){
+		return "pointwise " ~ super.toString;
+	}
+}
+
 class FunctionDef: Declaration{
 	Parameter[] params;
 	bool isTuple;
@@ -127,7 +158,7 @@ class FunctionDef: Declaration{
 	FunctionScope fscope_;
 	VarDecl context;
 	VarDecl contextVal;
-	VarDecl thisVar; // for constructors
+	VarDecl thisVar; // for constructors or manifold move operations
 	Identifier[] captures;
 	void addCapture(Identifier id){
 		captures~=id;
@@ -390,7 +421,6 @@ class ManifoldDecl : Declaration {
 	Expression tangentZeroExp;
 	FunctionDef moveOpDef;
 
-	VarDecl thisVar;
 	ManifoldDeclScope declScope;
 
 	// requires presemantic processing

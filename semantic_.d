@@ -1652,21 +1652,35 @@ enum ConstResult:bool{
 	yes,
 }
 
+Expression broadcastedType(VectorTy vecLhs, VectorTy vecRhs) {
+	// check for simple assignment compatibility
+	if (auto res = vecLhs.combineTypesImpl(vecRhs, true)) {
+		return res;
+	}
+	// TODO: check for broadcast compatibility
+	/*auto lhsShape = vecLhs.shape;
+	auto rhsShape = vecRhs.shape;
+	auto sourceShape = lhsShape.length <= rhsShape.length ? lhsShape : rhsShape;
+	auto targetShape = lhsShape.length > rhsShape.length ? lhsShape : rhsShape;*/
+	return null;
+}
+
 Expression arithmeticType(bool preserveBool)(Expression t1, Expression t2){
 	if(isInt(t1) && isSubtype(t2,ℤt(t1.isClassical()))) return t1; // TODO: automatic promotion to quantum
 	if(isInt(t2) && isSubtype(t1,ℤt(t2.isClassical()))) return t2;
 	if(isUint(t1) && isSubtype(t2,ℤt(t1.isClassical()))) return t1;
 	if(isUint(t2) && isSubtype(t1,ℤt(t2.isClassical()))) return t2;
-	if(preludeNumericTypeName(t1) != null||preludeNumericTypeName(t2) != null)
+	if(preludeNumericTypeName(t1) != null||preludeNumericTypeName(t2) != null) {
 		return joinTypes(t1,t2);
-	if(!isNumeric(t1)||!isNumeric(t2)) return null;
+	}
+	if (cast(VectorTy)t1&&cast(VectorTy)t2) {
+		return broadcastedType(cast(VectorTy)t1, cast(VectorTy)t2);
+	}
+	if(!(isNumeric(t1)&&isNumeric(t2))) return null;
 	auto r=joinTypes(t1,t2);
 	static if(!preserveBool){
 		if(r==Bool(true)) return ℕt(true);
 		if(r==Bool(false)) return ℕt(false);
-	}
-	static if (language==dp) { // element-wise operations
-		
 	}
 	return r;
 }
@@ -2381,13 +2395,13 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 			foreach (dim; dimExprs) {
 				expressionSemantic(dim,sc,ConstResult.yes);
 			}
-			return buildVectorTyFromShape(dtype, dimExprs, sc);
+			return buildTensorTyFromShape(dtype, dimExprs, sc);
 		} else {
 			Expression type=expressionSemantic(shape, sc, ConstResult.yes);
 			if (isSubtype(shape.type, ℕt(true))) {
 				return vectorTy(dtype, shape);
 			} else {
-				sc.error(format("vector length should be of type !ℕ, not %s", shape.type), shape.loc);
+				sc.error(format("vector length should be of type ℕ, not %s", shape.type), shape.loc);
 				return null;
 			}
 		}
@@ -2693,11 +2707,11 @@ Expression[] findDimExprs(Expression shapeExpression, Scope sc) {
 	}
 }
 
-VectorTy buildVectorTyFromShape(Expression dtype, Expression[] shape, Scope sc) {
+VectorTy buildTensorTyFromShape(Expression dtype, Expression[] shape, Scope sc) {
 	if (shape.length == 1) {
-		return vectorTy(dtype, shape[0]);
+		return vectorTy(dtype, shape[0], dtype);
 	} else {
-		return vectorTy(buildVectorTyFromShape(dtype, shape[1..$], sc), shape[0]);
+		return vectorTy(buildTensorTyFromShape(dtype, shape[1..$], sc), shape[0], dtype);
 	}
 }
 
@@ -2877,16 +2891,7 @@ static if (language==dp) ManifoldDecl manifoldDeclSemantic(ManifoldDecl maniDecl
 	}
 	// type check move operation signature and bind 'this' in move's function scope
 	if (auto moveOpDef = maniDecl.moveOpDef) {
-		auto moveOpTy = productTy([true], ["along"], tangentVecTy, unit, false, false, Annotation.none, true);
-		
-		maniDecl.thisVar = addVar("this",manifoldType,moveOpDef.loc,moveOpDef.body_.blscope_); // add 'this' var
-		maniDecl.moveOpDef = moveOpDef = functionDefSemantic(maniDecl.moveOpDef, maniDecl.declScope);
-
-		if (!isSubtype(moveOpDef.ftype, moveOpTy)) {
-			sc.error(format("manifold move operation %s does not conform to required signature %s", moveOpDef.ftype, moveOpTy.toString()), moveOpDef.loc);
-			maniDecl.sstate = SemState.error;
-			return maniDecl;
-		}
+		maniDecl.moveOpDef = manifoldMoveOpSemantic(moveOpDef, manifoldType, tangentVecTy, maniDecl.declScope);
 	}
 
 	maniDecl.type = unit;
@@ -2897,6 +2902,20 @@ static if (language==dp) ManifoldDecl manifoldDeclSemantic(ManifoldDecl maniDecl
 		maniDecl.sstate=SemState.completed;
 
 	return maniDecl;
+}
+
+static if (language==dp) FunctionDef manifoldMoveOpSemantic(FunctionDef moveOpDef, Type manifoldType, Type tangentVecTy, Scope sc) {
+	auto moveOpTy = productTy([true], ["along"], tangentVecTy, unit, false, false, Annotation.none, true);
+		
+	moveOpDef.thisVar = addVar("this",manifoldType,moveOpDef.loc,moveOpDef.body_.blscope_); // add 'this' var
+	moveOpDef = functionDefSemantic(moveOpDef, sc);
+
+	if (!isSubtype(moveOpDef.ftype, moveOpTy)) {
+		sc.error(format("manifold move operation %s does not conform to required signature %s", moveOpDef.ftype, moveOpTy.toString()), moveOpDef.loc);
+		moveOpDef.sstate = SemState.error;
+	}
+
+	return moveOpDef;
 }
 
 static if (language==dp) ManifoldDecl manifoldDeclPresemantic(ManifoldDecl maniDecl, Scope sc){
