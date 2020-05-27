@@ -648,7 +648,6 @@ ArrayTy arrayTy(Expression next)in{
 
 class VectorTy: Type, ITupleTy{
 	Expression next,num;
-	Expression dtype;
 
 	override ITupleTy isTupleTy(){
 		if(cast(LiteralExp)num) return this;
@@ -656,6 +655,14 @@ class VectorTy: Type, ITupleTy{
 	}
 	override VectorTy copyImpl(CopyArgs args){
 		return this;
+	}
+	@property Type elementType(){
+		auto nextTy = cast(Type)next;
+		assert(nextTy !is null); // .next must be a Type
+		if (auto nextVecTy=cast(VectorTy)unalias(nextTy)) {
+			return nextVecTy.elementType;
+		}
+		return nextTy;
 	}
 	@property size_t length(){
 		auto lit=cast(LiteralExp)num;
@@ -713,7 +720,7 @@ class VectorTy: Type, ITupleTy{
 			return tt.types.all!(ty=>next.unifyImpl(ty,subst,meet)) && num.unifyImpl(LiteralExp.makeInteger(tt.length),subst,meet);
 		if(auto vt=cast(VectorTy)rhs) {
 			if (isSubtype(this.num.type, arrayTy(ℕt(true)))) {
-				if (!next.unifyImpl(vt.dtype,subst,meet)) {
+				if (!next.unifyImpl(vt.elementType,subst,meet)) {
 					return false;
 				}
 				if (auto shapeTuple=vt.shapeTuple) {
@@ -797,32 +804,26 @@ class VectorTy: Type, ITupleTy{
 
 VectorTy tensorTy(Expression dtype, Expression[] shape) {
 	if (shape.length == 1) {
-		return vectorTy(dtype, shape[0], dtype);
+		return vectorTy(dtype, shape[0]);
 	} else {
-		return vectorTy(tensorTy(dtype, shape[1..$]), shape[0], dtype);
+		return vectorTy(tensorTy(dtype, shape[1..$]), shape[0]);
 	}
 }
 
-VectorTy vectorTy(Expression next, Expression num, Expression dtype=null)in{
+VectorTy vectorTy(Expression next, Expression num)in{
 	assert(next&&next.type==typeTy);
 	assert(num && (
 		isSubtype(num.type,ℕt(true)) || 
 		isSubtype(num.type,arrayTy(ℕt(true))
 	)));	   
 }body{
-	// for simple vector types, dtype == next
-	dtype = dtype ? dtype : next;
-	return memoize!((Expression next, Expression num, Expression dtype){
-		if (auto tupleExp = cast(TupleExp)num) {
-			return tensorTy(dtype, tupleExp.e);
-		}
-
+	return memoize!((Expression next, Expression num){
 		auto vecTy = new VectorTy(next,num);
-		// convenient access to data type of vector types which 
-		// represent tensor types
-		vecTy.dtype = dtype;
+		if (auto tupleExp = cast(TupleExp)num) {
+			return tensorTy(vecTy.elementType, tupleExp.e);
+		}
 		return vecTy;
-	})(next, num, dtype);
+	})(next, num);
 }
 
 /*VectorTy vectorTy(Expression next,Expression num)in{
@@ -1470,7 +1471,7 @@ ManifoldTy manifoldTy(Type elementType, Scope sc) {
 	import std.format;
 	return memoize!((Type manifoldType, Scope sc){
 		if (auto vectorTy=cast(VectorTy)manifoldType) {
-			Type elementType = cast(Type)vectorTy.dtype;
+			Type elementType = cast(Type)vectorTy.elementType;
 			if (!elementType) {
 				return null;
 			}
@@ -1481,12 +1482,13 @@ ManifoldTy manifoldTy(Type elementType, Scope sc) {
 			// construct element-wise tangentVector
 			Type elementWiseTangentVecTy = vectorTy.replacingElementType(unalias(elementMType.tangentVecTy));
 			elementWiseTangentVecTy = aliasTy("(" ~ vectorTy.toString() ~ ".tangentVector)", elementWiseTangentVecTy);
-			// construct tangentZero using a fill operator (support as built-in in interpreter)
-			auto elementWiseTangentVecZero = elementMType.tangentZeroExp; // TODO replace with lambda creating zero-filled tensor
-			// construct elementWise move operation using elementWise operator (support as built-in in interpreter)
 
-			Scope manifoldContainerScope = elementMType.manifoldDecl.declScope.parent;
-			auto elementWiseMoveOpDef = makePointWiseMoveOp(elementMType, elementWiseTangentVecTy, manifoldContainerScope);
+			Scope containerScope = elementMType.manifoldDecl.declScope.parent;
+
+			// construct tangentZero using a fill operator (support as built-in in interpreter)
+			auto elementWiseTangentVecZero = makePointWiseTangentZeroExp(elementMType, vectorTy, containerScope);
+			// construct elementWise move operation using elementWise operator (support as built-in in interpreter)
+			auto elementWiseMoveOpDef = makePointWiseMoveOp(elementMType, elementWiseTangentVecTy, containerScope);
 
 			auto manifoldTy = new ManifoldTy(vectorTy, elementWiseMoveOpDef, elementWiseTangentVecTy,
 			 	elementWiseTangentVecZero);
@@ -1508,6 +1510,18 @@ ManifoldTy manifoldTy(Type elementType, Scope sc) {
 			}
 		}	
 	})(elementType,sc);
+}
+
+CallExp makePointWiseTangentZeroExp(ManifoldTy elementMType, VectorTy vectorType, Scope sc) {
+	assert(elementMType.tangentZeroExp !is null);
+
+	auto args = new TupleExp([
+		elementMType.tangentZeroExp,
+		vectorType.shapeTuple
+	]);
+
+	auto callExp = new CallExp(new Identifier("fill"), args, false, true);
+	return cast(CallExp)callSemantic(callExp, sc, ConstResult.no);
 }
 
 FunctionDef makePointWiseMoveOp(ManifoldTy elementMType, Type tangentVecTy, Scope sc) {
