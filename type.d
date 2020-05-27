@@ -669,6 +669,21 @@ class VectorTy: Type, ITupleTy{
 			return [num];
 		}
 	}
+	@property TupleExp shapeTuple(){
+		auto shapeExprs = shape;
+		if (!shapeExprs.each!(se => isSubtype(se.type, ℕt(true)))) {
+			return null;
+		}
+		auto shapeTuple = new TupleExp(shapeExprs);
+		shapeTuple.type = tupleTy(iota(shapeExprs.length).map!(i => to!Expression(ℕt(true))).array);
+		if (shapeExprs.length > 0) {
+			shapeTuple.loc = shapeExprs[0].loc.to(shapeExprs[$-1].loc);
+		} else {
+			shapeTuple.loc = num.loc;
+		}
+		shapeTuple.sstate = SemState.completed;
+		return shapeTuple;
+	}
 	Expression opIndex(size_t i){ return next; }
 	Expression opSlice(size_t l,size_t r){
 		assert(0<=l&&l<=r&&r<=length);
@@ -696,8 +711,19 @@ class VectorTy: Type, ITupleTy{
 	override bool unifyImpl(Expression rhs,ref Expression[string] subst,bool meet){
 		if(auto tt=cast(TupleTy)rhs)
 			return tt.types.all!(ty=>next.unifyImpl(ty,subst,meet)) && num.unifyImpl(LiteralExp.makeInteger(tt.length),subst,meet);
-		if(auto vt=cast(VectorTy)rhs)
-			return next.unifyImpl(vt.next,subst,meet) && num.unifyImpl(vt.num,subst,meet);
+		if(auto vt=cast(VectorTy)rhs) {
+			if (isSubtype(this.num.type, arrayTy(ℕt(true)))) {
+				if (!next.unifyImpl(vt.dtype,subst,meet)) {
+					return false;
+				}
+				if (auto shapeTuple=vt.shapeTuple) {
+					return num.unifyImpl(shapeTuple,subst,meet);
+				}
+				return false;
+			} else {
+				return next.unifyImpl(vt.next,subst,meet) && num.unifyImpl(vt.num,subst,meet);
+			}
+		}
 		return false;
 	}
 	override VectorTy evalImpl(Expression ntype){
@@ -709,6 +735,7 @@ class VectorTy: Type, ITupleTy{
 			return next==r.next&&num==r.num;
 		return false;
 	}
+
 	override bool isSubtypeImpl(Expression r){
 		if(auto rarr=cast(ArrayTy)r) return isSubtype(next,rarr.next);
 		auto lvec=this,rvec=cast(VectorTy)r;
@@ -768,13 +795,28 @@ class VectorTy: Type, ITupleTy{
 	}
 }
 
+VectorTy tensorTy(Expression dtype, Expression[] shape) {
+	if (shape.length == 1) {
+		return vectorTy(dtype, shape[0], dtype);
+	} else {
+		return vectorTy(tensorTy(dtype, shape[1..$]), shape[0], dtype);
+	}
+}
+
 VectorTy vectorTy(Expression next, Expression num, Expression dtype=null)in{
 	assert(next&&next.type==typeTy);
-	assert(num && (isSubtype(num.type,ℕt(true))));	   
+	assert(num && (
+		isSubtype(num.type,ℕt(true)) || 
+		isSubtype(num.type,arrayTy(ℕt(true))
+	)));	   
 }body{
 	// for simple vector types, dtype == next
 	dtype = dtype ? dtype : next;
 	return memoize!((Expression next, Expression num, Expression dtype){
+		if (auto tupleExp = cast(TupleExp)num) {
+			return tensorTy(dtype, tupleExp.e);
+		}
+
 		auto vecTy = new VectorTy(next,num);
 		// convenient access to data type of vector types which 
 		// represent tensor types
@@ -1503,6 +1545,8 @@ class AliasTy : Type {
 	private this(string name, Type target){
 		this.name = name;
 		this.target = target;
+		this.type=typeTy;
+		super();
 	}
 	override AliasTy copyImpl(CopyArgs args){
 		return this;

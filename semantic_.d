@@ -2395,13 +2395,14 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 			foreach (dim; dimExprs) {
 				expressionSemantic(dim,sc,ConstResult.yes);
 			}
-			return buildTensorTyFromShape(dtype, dimExprs, sc);
+			return tensorTy(dtype, dimExprs);
 		} else {
-			Expression type=expressionSemantic(shape, sc, ConstResult.yes);
-			if (isSubtype(shape.type, ℕt(true))) {
-				return vectorTy(dtype, shape);
+			Expression type=expressionSemantic(dtype, sc, ConstResult.yes);
+			shape=expressionSemantic(shape, sc, ConstResult.yes);
+			if (isSubtype(shape.type, ℕt(true)) || isSubtype(shape.type,arrayTy(ℕt(true)))) {
+				return vectorTy(type, shape);
 			} else {
-				sc.error(format("vector length should be of type ℕ, not %s", shape.type), shape.loc);
+				sc.error(format("vector length should be of type ℕ or ℕ[], not %s", shape.type), shape.loc);
 				return null;
 			}
 		}
@@ -2695,23 +2696,10 @@ Expression conditionSemantic(bool allowQuantum=false)(Expression e,Scope sc){
 // traverses the tree of BinaryExp at shapeExpression and 
 // returns a flat list of Expressions
 Expression[] findDimExprs(Expression shapeExpression, Scope sc) {
-	if (cast(LiteralExp) shapeExpression !is null) {
-		return [shapeExpression];
-	} if (cast(Identifier) shapeExpression !is null) {
-		return [shapeExpression];
-	} else if (auto binExp = cast(BinaryExp!(Tok!"×"))shapeExpression) {
+	if (auto binExp = cast(BinaryExp!(Tok!"×"))shapeExpression) {
 		return findDimExprs(binExp.e1, sc) ~ [binExp.e2];
 	} else {
-		sc.error(format("Invalid tensor dimension type %s",shapeExpression.type), shapeExpression.loc);
-		return [];
-	}
-}
-
-VectorTy buildTensorTyFromShape(Expression dtype, Expression[] shape, Scope sc) {
-	if (shape.length == 1) {
-		return vectorTy(dtype, shape[0], dtype);
-	} else {
-		return vectorTy(buildTensorTyFromShape(dtype, shape[1..$], sc), shape[0], dtype);
+		return [shapeExpression];
 	}
 }
 
