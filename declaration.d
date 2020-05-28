@@ -93,7 +93,7 @@ class Parameter: VarDecl{
 // TODO: Implement more elegantly or expose in the frontend
 // For now, point-wise FunctionDefs are only used internally and most of their
 // semantic properties are not set correctly. 
-// See ManifoldTy manifoldTy(Type elementType, Scope sc) for the use case.
+// See Manifold manifoldImpl(Type elementType, Scope sc) for the use case.
 class PointWiseFunctionDef: FunctionDef {
 	// actual point-wise definition of the function
 	FunctionDef pointWiseDef;
@@ -427,7 +427,7 @@ class ManifoldDecl : Declaration {
 	SemState sstate = SemState.raw;
 
 	// the corresponding manifold type
-	ManifoldTy mtype;
+	Manifold mtype;
 
 	this(Identifier typeName, CompoundExp body_){
 		import std.format;

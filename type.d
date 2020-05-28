@@ -103,6 +103,31 @@ abstract class Type: Expression{
 		}
 		return super.isSubtypeImpl(other);
 	}
+
+	final Manifold manifold(Scope sc) {
+		return memoize!((Type manifoldImpl, Scope sc){
+			return this.manifoldImpl(sc);
+		})(this, sc);
+	}
+
+	// returns the manifold implementation for this type or null if none was defined
+	Manifold manifoldImpl(Scope sc) {
+		import std.format : format;
+
+		Identifier manifoldId = new Identifier("manifold " ~ this.toString());
+		if (auto decl = cast(ManifoldDecl)sc.lookup(manifoldId,false,true,Lookup.probing)) {
+			decl = manifoldDeclSemantic(decl, sc);
+			auto mtype = decl.mtype;
+			if (!mtype) {
+				return null;
+			}
+			return mtype;
+		} else {
+			writeln(format("Could not find manifold declaration for type %s under name %s.", 
+				this.toString(), manifoldId.toString()));
+			return null;
+		}
+	}
 }
 
 class ErrorTy: Type{
@@ -800,6 +825,32 @@ class VectorTy: Type, ITupleTy{
 		if(auto r=dg(next)) return r;
 		return dg(num);
 	}
+
+	override Manifold manifoldImpl(Scope sc) {
+		Type elementType = cast(Type)this.elementType;
+		if (!elementType) {
+			return null;
+		}
+		Manifold elementMType = elementType.manifoldImpl(sc);
+		if (!elementMType) {
+			return null;
+		}
+		// construct element-wise tangentVector
+		Type elementWiseTangentVecTy = this.replacingElementType(unalias(elementMType.tangentVecTy));
+		elementWiseTangentVecTy = aliasTy("(" ~ this.toString() ~ ".tangentVector)", elementWiseTangentVecTy);
+
+		Scope containerScope = elementMType.manifoldDecl.declScope.parent;
+
+		// construct tangentZero using a fill operator (support as built-in in interpreter)
+		auto elementWiseTangentVecZero = makePointWiseTangentZeroExp(elementMType, this, containerScope);
+		// construct elementWise move operation using elementWise operator (support as built-in in interpreter)
+		auto elementWiseMoveOpDef = makePointWiseMoveOp(elementMType, elementWiseTangentVecTy, containerScope);
+
+		auto pointWiseManifold = new Manifold(this, elementWiseMoveOpDef, elementWiseTangentVecTy,
+			elementWiseTangentVecZero);
+		pointWiseManifold.manifoldDecl = elementMType.manifoldDecl;
+		return pointWiseManifold;
+	}
 }
 
 VectorTy tensorTy(Expression dtype, Expression[] shape) {
@@ -826,12 +877,46 @@ VectorTy vectorTy(Expression next, Expression num)in{
 	})(next, num);
 }
 
-/*VectorTy vectorTy(Expression next,Expression num)in{
-	assert(next&&next.type==typeTy);
-	assert(num&&(isSubtype(num.type,ℕt(true)) || cast(TypeTy) num.type !is null) );
-}body{
-	return memoize!((Expression next,Expression num)=>new VectorTy(next,num))(next,num);
-}*/
+FunctionDef makePointWiseMoveOp(Manifold elementMType, Type tangentVecTy, Scope sc) {
+	assert(elementMType.moveOpDef !is null);
+	assert(elementMType.elementType !is null);
+	assert(elementMType.tangentVecTy !is null);
+	assert(sc !is null);
+
+	// FunctionDef funDef = elementMType.moveOpDef.copy();
+	// funDef = cast(FunctionDef)presemantic(funDef, sc);
+	//funDef = manifoldMoveOpSemantic(funDef, elementMType.elementType, elementMType.tangentVecTy, sc);
+
+	FunctionDef funDef = new PointWiseFunctionDef(new Identifier("move"), [
+		new Parameter(false, new Identifier("along"), tangentVecTy)
+	], false, elementMType.moveOpDef);
+
+	funDef.ftype = productTy([true], ["along"], tangentVecTy, unit, false, false, Annotation.none, true);
+	funDef.type = unit;
+
+	return funDef;
+}
+
+VectorTy replacingElementType(VectorTy vecTy, Type elementType) {
+	if (auto nextVecTy=cast(VectorTy)vecTy.next) {
+		return vectorTy(replacingElementType(nextVecTy, elementType), vecTy.num);
+	} else {
+		return vectorTy(elementType, vecTy.num);
+	}
+}
+
+
+CallExp makePointWiseTangentZeroExp(Manifold elementMType, VectorTy vectorType, Scope sc) {
+	assert(elementMType.tangentZeroExp !is null);
+
+	auto args = new TupleExp([
+		elementMType.tangentZeroExp,
+		vectorType.shapeTuple
+	]);
+
+	auto callExp = new CallExp(new Identifier("fill"), args, false, true);
+	return cast(CallExp)callSemantic(callExp, sc, ConstResult.no);
+}
 
 static Expression elementType(Expression ty){
 	if(auto at=cast(ArrayTy)ty) return at.next;
@@ -1419,7 +1504,7 @@ class TypeTy: Type{
 private TypeTy theTypeTy;
 TypeTy typeTy(){ return theTypeTy?theTypeTy:(theTypeTy=new TypeTy()); }
 
-class ManifoldTy: Type{
+class Manifold: Node {
 	Type elementType;
 	FunctionDef moveOpDef;
 	Type tangentVecTy;
@@ -1428,127 +1513,26 @@ class ManifoldTy: Type{
 	ManifoldDecl manifoldDecl;
  
 	this(Type elementType, FunctionDef moveOpDef, Type tangentVecTy, Expression tangentZeroExp){ 
-		super();
-		
-		this.type=typeTy;
-
 		this.elementType = elementType;
 		this.moveOpDef = moveOpDef;
 		this.tangentVecTy = tangentVecTy;
 		this.tangentZeroExp = tangentZeroExp;
 	}
-	override ManifoldTy copyImpl(CopyArgs args){
-		return this;
+
+	override @property string kind() {
+		return "manifold implementation";
 	}
 	override string toString(){
 		return "manifold " ~ elementType.toString();
 	}
 	override bool opEquals(Object o){
-		ManifoldTy otherManifoldTy = cast(ManifoldTy)o;
-		if (!otherManifoldTy) return false;
-		return elementType == otherManifoldTy.elementType &&
-			moveOpDef == otherManifoldTy.moveOpDef &&
-			tangentZeroExp == otherManifoldTy.tangentZeroExp &&
-			tangentZeroExp == otherManifoldTy.tangentVecTy &&
-			manifoldDecl == otherManifoldTy.manifoldDecl;
-	}
-	override bool isClassical(){
-		return true;
-	}
-	override bool hasClassicalComponent(){
-		return true;
-	}
-	override Expression evalImpl(Expression ntype){ 
-		return this;
-	}
-	mixin VariableFree;
-	override int componentsImpl(scope int delegate(Expression) dg){
-		return 0;
-	}
-}
-
-ManifoldTy manifoldTy(Type elementType, Scope sc) {
-	import std.format;
-	return memoize!((Type manifoldType, Scope sc){
-		if (auto vectorTy=cast(VectorTy)manifoldType) {
-			Type elementType = cast(Type)vectorTy.elementType;
-			if (!elementType) {
-				return null;
-			}
-			ManifoldTy elementMType = manifoldTy(elementType, sc);
-			if (!elementMType) {
-				return null;
-			}
-			// construct element-wise tangentVector
-			Type elementWiseTangentVecTy = vectorTy.replacingElementType(unalias(elementMType.tangentVecTy));
-			elementWiseTangentVecTy = aliasTy("(" ~ vectorTy.toString() ~ ".tangentVector)", elementWiseTangentVecTy);
-
-			Scope containerScope = elementMType.manifoldDecl.declScope.parent;
-
-			// construct tangentZero using a fill operator (support as built-in in interpreter)
-			auto elementWiseTangentVecZero = makePointWiseTangentZeroExp(elementMType, vectorTy, containerScope);
-			// construct elementWise move operation using elementWise operator (support as built-in in interpreter)
-			auto elementWiseMoveOpDef = makePointWiseMoveOp(elementMType, elementWiseTangentVecTy, containerScope);
-
-			auto manifoldTy = new ManifoldTy(vectorTy, elementWiseMoveOpDef, elementWiseTangentVecTy,
-			 	elementWiseTangentVecZero);
-			manifoldTy.manifoldDecl = elementMType.manifoldDecl;
-			return manifoldTy;
-		} else {
-			Identifier manifoldId = new Identifier("manifold " ~ manifoldType.toString());
-			if (auto decl = cast(ManifoldDecl)sc.lookup(manifoldId,false,true,Lookup.probing)) {
-				decl = manifoldDeclSemantic(decl, sc);
-				auto mtype = decl.mtype;
-				if (!mtype) {
-					return null;
-				}
-				return mtype;
-			} else {
-				writeln(format("Could not find manifold declaration for type %s under name %s.", 
-					manifoldType.toString(), manifoldId.toString()));
-				return null;
-			}
-		}	
-	})(elementType,sc);
-}
-
-CallExp makePointWiseTangentZeroExp(ManifoldTy elementMType, VectorTy vectorType, Scope sc) {
-	assert(elementMType.tangentZeroExp !is null);
-
-	auto args = new TupleExp([
-		elementMType.tangentZeroExp,
-		vectorType.shapeTuple
-	]);
-
-	auto callExp = new CallExp(new Identifier("fill"), args, false, true);
-	return cast(CallExp)callSemantic(callExp, sc, ConstResult.no);
-}
-
-FunctionDef makePointWiseMoveOp(ManifoldTy elementMType, Type tangentVecTy, Scope sc) {
-	assert(elementMType.moveOpDef !is null);
-	assert(elementMType.elementType !is null);
-	assert(elementMType.tangentVecTy !is null);
-	assert(sc !is null);
-
-	// FunctionDef funDef = elementMType.moveOpDef.copy();
-	// funDef = cast(FunctionDef)presemantic(funDef, sc);
-	//funDef = manifoldMoveOpSemantic(funDef, elementMType.elementType, elementMType.tangentVecTy, sc);
-
-	FunctionDef funDef = new PointWiseFunctionDef(new Identifier("move"), [
-		new Parameter(false, new Identifier("along"), tangentVecTy)
-	], false, elementMType.moveOpDef);
-
-	funDef.ftype = productTy([true], ["along"], tangentVecTy, unit, false, false, Annotation.none, true);
-	funDef.type = unit;
-
-	return funDef;
-}
-
-VectorTy replacingElementType(VectorTy vecTy, Type elementType) {
-	if (auto nextVecTy=cast(VectorTy)vecTy.next) {
-		return vectorTy(replacingElementType(nextVecTy, elementType), vecTy.num);
-	} else {
-		return vectorTy(elementType, vecTy.num);
+		Manifold otherManifold = cast(Manifold)o;
+		if (!otherManifold) return false;
+		return elementType == otherManifold.elementType &&
+			moveOpDef == otherManifold.moveOpDef &&
+			tangentZeroExp == otherManifold.tangentZeroExp &&
+			tangentZeroExp == otherManifold.tangentVecTy &&
+			manifoldDecl == otherManifold.manifoldDecl;
 	}
 }
 
@@ -1602,4 +1586,113 @@ Type unalias(Type type) {
 		return aliasType.target;
 	}
 	return type;
+}
+
+class ParameterSetTy : Type {
+	Expression target;
+	enum classical=true;
+	private this(Expression target){
+		super();
+		
+		this.target = target;
+		this.type=typeTy;
+	}
+	override ParameterSetTy copyImpl(CopyArgs args){
+		return new ParameterSetTy(target.copy());
+	}
+	override string toString(){
+		return "params[" ~ target.toString ~ "]";
+	}
+	override bool opEquals(Object o){
+		auto otherParamSetTy = cast(ParameterSetTy)o;
+		if (!otherParamSetTy) {
+			return false;
+		}
+		return otherParamSetTy.target == target;
+	}
+	override bool isClassical(){
+		return classical;
+	}
+	override bool hasClassicalComponent(){
+		return true;
+	}
+	override Expression evalImpl(Expression ntype){ 
+		return new ParameterSetTy(target.eval()); 
+	}
+	mixin VariableFree;
+	override int componentsImpl(scope int delegate(Expression) dg){
+		return dg(target);
+	}
+
+	override bool isSubtypeImpl(Expression other) {
+		return this == other;
+	}
+
+	override Manifold manifoldImpl(Scope sc) {
+		auto tangentVecTy = opaqueTangentVecTy(this);
+		
+		auto tangentZeroExp = new FieldExp(new ParameterSetHandleExp(target), new Identifier("tangentZero"));
+		tangentZeroExp.type = tangentVecTy;
+
+		FunctionDef moveOpDef = new FunctionDef(new Identifier("move"), [
+			new Parameter(false, new Identifier("along"), tangentVecTy)
+		], false, null, null); // body is null, moveOp is an interpreter built-in
+
+		moveOpDef.ftype = productTy([true], ["along"], tangentVecTy, unit, false, false, Annotation.none, true);
+		moveOpDef.type = unit;
+
+		return new Manifold(this, moveOpDef, tangentVecTy, tangentZeroExp);
+	}
+}
+
+ParameterSetTy parameterSetTy(Expression target){
+	return memoize!((Expression target)=>new ParameterSetTy(target))(target);
+}
+
+// TODO: Think about a generalisation of this (existential types?)
+class OpaqueTangentVecTy : Type {
+	string name;
+	enum classical=true;
+	Expression elementTy;
+
+	private this(Expression elementTy){
+		super();
+		
+		this.elementTy = elementTy;
+		this.type=typeTy;
+	}
+	override OpaqueTangentVecTy copyImpl(CopyArgs args){
+		return new OpaqueTangentVecTy(elementTy.copy());
+	}
+	override string toString(){
+		return elementTy.toString ~ ".tangentVector";
+	}
+	override bool opEquals(Object o){
+		auto otherParamSetTy = cast(OpaqueTangentVecTy)o;
+		if (!otherParamSetTy) {
+			return false;
+		}
+		return otherParamSetTy.elementTy == elementTy;
+	}
+	override bool isClassical(){
+		return classical;
+	}
+	override bool hasClassicalComponent(){
+		return true;
+	}
+	override Expression evalImpl(Expression ntype){ 
+		return new OpaqueTangentVecTy(elementTy.eval()); 
+	}
+	mixin VariableFree;
+	override int componentsImpl(scope int delegate(Expression) dg){
+		return dg(elementTy);
+	}
+
+	override bool isSubtypeImpl(Expression other) {
+		return this == other;
+	}
+}
+
+OpaqueTangentVecTy opaqueTangentVecTy(Type elementTy){
+	return memoize!((Expression elementTy)=>new OpaqueTangentVecTy(elementTy))(elementTy);
 }

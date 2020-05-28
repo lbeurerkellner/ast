@@ -1546,7 +1546,7 @@ class ParameterSetHandleExp: Expression{
 	}
 	override string toString(){ return _brk(target.toString()~".params"); }
 
-	override string kind() { return "params[]"; }
+	override string kind() { return "parameter set handle"; }
 
 	override Expression evalImpl(Expression ntype){
 		auto targetVal=target.eval();
@@ -1558,17 +1558,18 @@ class ParameterSetHandleExp: Expression{
 	}
 }
 
+// TODO: make this a regular FieldExp and handle on interpreter-level
 class ManifoldMoveExp: Expression{
 	Expression target;
-	ManifoldTy manifoldTy;
+	Manifold manifold;
 	bool isPointWise = false;
 
-	this(Expression target, ManifoldTy manifoldTy){
+	this(Expression target, Manifold manifold){
 		this.target=target;
-		this.manifoldTy = manifoldTy;
+		this.manifold = manifold;
 	}
 	override ManifoldMoveExp copyImpl(CopyArgs args){
-		return new ManifoldMoveExp(target.copy(args), manifoldTy.copy(args));
+		return new ManifoldMoveExp(target.copy(args), manifold);
 	}
 	override string toString(){ return _brk(target.toString()~".move"); }
 
@@ -1576,13 +1577,10 @@ class ManifoldMoveExp: Expression{
 
 	override Expression evalImpl(Expression ntype){
 		auto targetVal=target.eval();
-		return new ManifoldMoveExp(targetVal, manifoldTy);
+		return new ManifoldMoveExp(targetVal, manifold);
 	}
 	mixin VariableFree; // TODO
 	override int componentsImpl(scope int delegate(Expression) dg){
-		if (auto res = dg(target)) {
-			return res;
-		}
-		return dg(manifoldTy);
+		return dg(target);
 	}
 }
