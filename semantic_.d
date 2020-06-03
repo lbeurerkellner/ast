@@ -1683,7 +1683,6 @@ Expression callSemantic(CallExp ce,Scope sc,ConstResult constResult){
 					// call target is squared call exp, i.e. dat declaration's type arguments
 					callExpTarget.e=id;
 				} else {
-					writeln("Replacing ", ce.e, " with ", id);
 					ce.e=id;
 				}
 			}
