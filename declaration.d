@@ -50,6 +50,11 @@ class CompoundDecl: Expression{
 class VarDecl: Declaration{
 	Expression dtype;
 	bool isConst;
+
+	static if (language==dp) {
+		bool isParamDefinition = false;
+	}
+
 	this(Identifier name){ super(name); }
 	override VarDecl copyImpl(CopyArgs args){
 		enforce(!args.preserveSemantic,"TODO");
@@ -222,6 +227,19 @@ class DatDecl: Declaration{
 	bool isTuple;
 	bool isQuantum;
 	CompoundDecl body_;
+	
+	static if (language==dp) {
+		bool isParameterized=true;
+
+		static const auto INIT_FUNCTION_NAME = "`init";
+		// returns the FunctionDef of the parameter initialization procedure or null if none exists
+		@property FunctionDef initFunctionDef() {
+			return cast(FunctionDef)body_.ascope_.lookupHere(
+				new Identifier(INIT_FUNCTION_NAME),false,Lookup.consuming);
+		}
+
+	}
+
 	this(Identifier name,bool hasParams,DatParameter[] params,bool isTuple,bool isQuantum,CompoundDecl body_)in{
 		if(hasParams) assert(isTuple||params.length==1);
 		else assert(isTuple&&params.length==0);
@@ -268,10 +286,6 @@ class DatDecl: Declaration{
 
 abstract class DefExp: Expression{
 	BinaryExp!(Tok!":=") initializer;
-	
-	static if (language==dp) {
-		bool isParamDefinition = false;
-	}
 	
 	this(BinaryExp!(Tok!":=") init){ this.initializer=init; }
 	abstract VarDecl[] decls();

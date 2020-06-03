@@ -102,6 +102,42 @@ VarDecl addVar(string name,Expression ty,Location loc,Scope sc){
 	assert(!!var && var.sstate==SemState.completed);
 	return var;
 }
+
+// generates a synthesized member-function for a DatDecl with parameters (initializes the parameters)
+FunctionDef makeParameterInitializerFunction(ParamDefExp[] parameterDefinitions) {
+	import std.algorithm.iteration : map;
+	
+	auto body_ = new CompoundExp(
+		parameterDefinitions.map!((def){
+			auto defineExp = cast(DefineExp)def.defineExp;
+			assert(defineExp);
+			auto originalLhs = defineExp.e1;
+			auto rhs = defineExp.e2;
+
+			Expression lhs;
+
+			if (auto ident = cast(Identifier)originalLhs) {
+				lhs = new FieldExp(new Identifier("this"), ident);
+			} else if (auto typeAnno = cast(TypeAnnotationExp)originalLhs) {
+				if (auto ident = cast(Identifier) typeAnno.e) {
+					lhs = new FieldExp(new Identifier("this"), ident); 
+				}
+			}
+
+			if (!lhs) {
+				writeln("error: unhandled parameter definition left-hand side: ", originalLhs);
+				assert(false);
+			}
+			lhs.loc = originalLhs.loc;
+			auto memberDefineExp = cast(Expression)new AssignExp(lhs, rhs);
+			memberDefineExp.loc = defineExp.loc;
+			return memberDefineExp;
+		}).array
+	);
+	
+	return new FunctionDef(new Identifier(DatDecl.INIT_FUNCTION_NAME), [], true, null, body_);
+}
+
 Expression presemantic(Declaration expr,Scope sc){
 	bool success=true; // dummy
 	if(!expr.scope_) makeDeclaration(expr,success,sc);
@@ -111,16 +147,30 @@ Expression presemantic(Declaration expr,Scope sc){
 		assert(!dat.dscope_);
 		dat.dscope_=dsc;
 		dat.dtype=new AggregateTy(dat,!dat.isQuantum);
-		if(dat.hasParams) declareParameters(dat,true,dat.params,dsc);
+		// handle type parameters
+		if(dat.hasParams) declareParameters(dat,true,dat.params,dsc); 
 		if(!dat.body_.ascope_) dat.body_.ascope_=new AggregateScope(dat.dscope_);
 		if(cast(NestedScope)sc) dat.context = addVar("`outer",contextTy(true),dat.loc,dsc);
-		foreach(ref exp;dat.body_.s) exp=makeDeclaration(exp,success,dat.body_.ascope_);
+		
+		// handle parameter declarations (param fields)
+		ParamDefExp[] parameterDefinitions;
+		foreach(ref exp;dat.body_.s) { 
+			if (auto paramDefExp = cast(ParamDefExp)exp) {
+				parameterDefinitions ~= [paramDefExp];
+			}
+			exp=makeDeclaration(exp,success,dat.body_.ascope_);
+		}
+		if (parameterDefinitions.length > 0) {
+			auto initFun = presemantic(makeParameterInitializerFunction(parameterDefinitions), dat.body_.ascope_);
+			dat.body_.s ~= [initFun];
+		}
+
 		foreach(ref exp;dat.body_.s) if(auto decl=cast(Declaration)exp) exp=presemantic(decl,dat.body_.ascope_);
 	}
 	if(auto fd=cast(FunctionDef)expr){
 		if(fd.fscope_) return fd;
 		auto fsc=new FunctionScope(sc,fd);
-		if (language==dp) fsc.allowsParameterDefinitions = fd.isParameterized;
+		static if (language==dp) fsc.allowsParameterDefinitions = fd.isParameterized;
 		fd.type=unit;
 		fd.fscope_=fsc;
 		declareParameters(fd,fd.isSquare,fd.params,fsc); // parameter variables
@@ -295,6 +345,7 @@ Expression makeDeclaration(Expression expr,ref bool success,Scope sc, bool isPar
 			auto nid=new Identifier(id.name);
 			nid.loc=id.loc;
 			auto vd=new VarDecl(nid);
+			static if (language==dp) vd.isParamDefinition = isParamDefinition;
 			vd.loc=id.loc;
 			if(be.e2.sstate!=SemState.error||!sc.lookupHere(nid,false,Lookup.probing))
 				success&=sc.insert(vd);
@@ -304,7 +355,7 @@ Expression makeDeclaration(Expression expr,ref bool success,Scope sc, bool isPar
 		}
 		static if (language==dp) {
 			if (isParamDefinition && !sc.allowsParameterDefinitions) {
-				sc.error("Cannot declare parameters in non-parameterized function.", be.loc);
+				sc.error("Can only declare parameters in parameterized functions or dat declarations.", be.loc);
 				success=false;
 				expr.sstate=SemState.error;
 				return expr;
@@ -313,9 +364,6 @@ Expression makeDeclaration(Expression expr,ref bool success,Scope sc, bool isPar
 		if(auto id=cast(Identifier)be.e1){
 			auto vd=makeVar(id);
 			auto de=new SingleDefExp(vd,be);
-			static if (language==dp) {
-				de.isParamDefinition = isParamDefinition;
-			}
 			de.loc=be.loc;
 			propErr(vd,de);
 			return de;
@@ -327,13 +375,11 @@ Expression makeDeclaration(Expression expr,ref bool success,Scope sc, bool isPar
 				else goto LnoIdTuple;
 			}
 			auto de=new MultiDefExp(vds,be);
-			static if (language==dp) de.isParamDefinition = isParamDefinition;
 			de.loc=be.loc;
 			foreach(vd;vds) if(vd) propErr(vd,de);
 			return de;
 		}else if(cast(IndexExp)be.e1){
 			auto de=new SingleDefExp(null,be);
-			static if (language==dp) de.isParamDefinition = isParamDefinition;
 			de.loc=be.loc;
 			return de;
 		}else LnoIdTuple:{
@@ -348,6 +394,7 @@ Expression makeDeclaration(Expression expr,ref bool success,Scope sc, bool isPar
 			auto vd=new VarDecl(id);
 			vd.loc=tae.loc;
 			vd.dtype=tae.t;
+			static if (language==dp) vd.isParamDefinition = isParamDefinition;
 			vd.vtype=typeSemantic(vd.dtype,sc);
 			vd.loc=id.loc;
 			success&=sc.insert(vd);
@@ -356,8 +403,17 @@ Expression makeDeclaration(Expression expr,ref bool success,Scope sc, bool isPar
 			return vd;
 		}
 	}
-	if(expr.sstate!=SemState.error&&expr.loc.line!=0)
+	if (auto paramExp=cast(ParamDefExp)expr){
+		auto defineExp = cast(DefineExp)paramExp.defineExp;
+		assert(defineExp);
+		return makeDeclaration(defineExp.e1, success, sc, true);
+	}
+	if (auto fieldDeclExp = cast(DefExp)expr) {
+		return fieldDeclExp;
+	}
+	if(expr.sstate!=SemState.error&&expr.loc.line!=0) {
 		sc.error("not a declaration: "~expr.toString()~" ",expr.loc);
+	}
 	expr.sstate=SemState.error;
 	success=false;
 	return expr;
@@ -530,8 +586,12 @@ Expression nestedDeclSemantic(Expression e,Scope sc){
 		return functionDefSemantic(fd,sc);
 	if(auto dd=cast(DatDecl)e)
 		return datDeclSemantic(dd,sc);
-	if(isFieldDecl(e)) return fieldDeclSemantic(e,sc);
-	if(auto ce=cast(CommaExp)e) return expectFieldDeclSemantic(ce,sc);
+	if(auto paramDef=cast(ParamDefExp)e)
+		return paramDef;
+	if(isFieldDecl(e)) 
+		return fieldDeclSemantic(e,sc);
+	if(auto ce=cast(CommaExp)e) 
+		return expectFieldDeclSemantic(ce,sc);
 	sc.error("not a declaration",e.loc);
 	e.sstate=SemState.error;
 	return e;
@@ -768,23 +828,27 @@ Expression statementSemantic(Expression e,Scope sc)in{
 
 	static if (language==dp) {
 		if (auto paramExp=cast(ParamDefExp)e){
-			paramExp.definitions = statementSemantic(paramExp.definitions,sc);
-			paramExp.context = paramExp.context?expressionSemantic(paramExp.context,sc,ConstResult.yes):null;
-
-			if (paramExp.context !is null) {
-				if (!(isSubtype(paramExp.context.type, ℕt) || isSubtype(paramExp.context.type, stringTy))) {
-					sc.error(format("parameter context must be a natural number or string not %s", paramExp.context.type.toString()),paramExp.context.loc);
-					paramExp.context.sstate=SemState.error;
-				}
-			}
-
-			return paramExp;
+			return paramDefSemantic(paramExp, sc);
 		}
 	}
 
 	sc.error("not supported at this location",e.loc);
 	e.sstate=SemState.error;
 	return e;
+}
+
+ParamDefExp paramDefSemantic(ParamDefExp paramExp, Scope sc) {
+	paramExp.defineExp = statementSemantic(paramExp.defineExp, sc);
+	paramExp.context = paramExp.context?expressionSemantic(paramExp.context,sc,ConstResult.yes):null;
+
+	if (paramExp.context !is null) {
+		if (!(isSubtype(paramExp.context.type, ℕt) || isSubtype(paramExp.context.type, stringTy))) {
+			sc.error(format("parameter context must be a natural number or string not %s", paramExp.context.type.toString()),paramExp.context.loc);
+			paramExp.context.sstate=SemState.error;
+		}
+	}
+	
+	return paramExp;
 }
 
 CompoundExp controlledCompoundExpSemantic(CompoundExp ce,Scope sc,Expression control,Annotation restriction_)in{
@@ -1605,13 +1669,23 @@ Expression callSemantic(CallExp ce,Scope sc,ConstResult constResult){
 				id.scope_=sc;
 				id.type=ty;
 				id.sstate=SemState.completed;
-				if(auto fe=cast(FieldExp)fun){
+
+				auto fe=cast(FieldExp)fun;
+				auto callExpTarget=cast(CallExp)fun;
+				
+				if(fe){
 					assert(fe.e.sstate==SemState.completed);
 					ce.e=new FieldExp(fe.e,id);
 					ce.e.type=id.type;
 					ce.e.loc=fun.loc;
 					ce.e.sstate=SemState.completed;
-				}else ce.e=id;
+				} else if (callExpTarget && callExpTarget.isSquare && cast(Identifier)callExpTarget.e) {
+					// call target is squared call exp, i.e. dat declaration's type arguments
+					callExpTarget.e=id;
+				} else {
+					writeln("Replacing ", ce.e, " with ", id);
+					ce.e=id;
+				}
 			}
 		}
 	}else if(isBuiltIn(cast(Identifier)ce.e)){
@@ -1990,6 +2064,19 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 			}
 		}
 		static if (language==dp) {
+			if (auto aggrTy=isDataTyId(fe.e.type)) {
+				if (aggrTy.isParameterized) {
+					const auto memberName = fe.f.name;
+					if(memberName=="params"){
+						auto paramExp = new ParameterSetHandleExp(fe.e);
+						return expr=expressionSemantic(paramExp, sc, ConstResult.no);
+					} else if (["move", "tangentVector", "tangentZero"].any!(n => n == memberName)) {
+						// TODO: think about whether this can be done in ProductTy
+						auto paramExp = new ParameterSetHandleExp(fe.e);
+						return expr=expressionSemantic(new FieldExp(paramExp, fe.f), sc, ConstResult.no);
+					}
+				}
+			}
 			if (auto funTy=cast(FunTy)fe.e.type) {
 				if (funTy.isParameterized && funTy.isInitialised) {
 					const auto memberName = fe.f.name;

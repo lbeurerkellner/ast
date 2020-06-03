@@ -386,9 +386,13 @@ class AggregateTy: Type{
 		bool classical;
 		private AggregateTy classicalTy;
 	}else enum classical=true;
+	static if(language==dp){
+		bool isParameterized;
+	}
 	this(DatDecl decl,bool classical){
 		if(!classical) assert(decl.isQuantum);
 		this.decl=decl;
+		this.isParameterized=decl.isParameterized;
 		static if(language==silq){
 			this.classical=classical;
 			if(classical) classicalTy=this;
@@ -868,6 +872,19 @@ VectorTy vectorTy(Expression next, Expression num)in{
 		isSubtype(num.type,arrayTy(ℕt(true))
 	)));	   
 }body{
+	if (isSubtype(num.type, arrayTy(ℕt(true)))) {
+		if (auto arrayExp = cast(ArrayExp)num) {
+			if (arrayExp.e.length == 1) {
+				num = arrayExp.e[0];
+			}
+		}
+		if (auto tupleExp = cast(TupleExp)num) {
+			if (tupleExp.e.length == 1) {
+				num = tupleExp.e[0];
+			}
+		}
+	}
+
 	return memoize!((Expression next, Expression num){
 		auto vecTy = new VectorTy(next,num);
 		if (auto tupleExp = cast(TupleExp)num) {

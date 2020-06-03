@@ -479,7 +479,7 @@ class NestedScope: Scope{
 	this(Scope parent){ 
 		this.parent=parent; 
 		//TODO Luca: Do not pass this property into lambdas
-		if (language==dp) this.allowsParameterDefinitions = parent.allowsParameterDefinitions;
+		static if (language==dp) this.allowsParameterDefinitions = parent.allowsParameterDefinitions;
 	}
 	override Declaration lookup(Identifier ident,bool rnsym,bool lookupImports,Lookup kind){
 		if(auto decl=lookupHere(ident,rnsym,kind)) return decl;
@@ -549,6 +549,8 @@ class DataScope: NestedScope{
 	this(Scope parent,DatDecl decl){
 		super(parent);
 		this.decl=decl;
+		
+		allowsParameterDefinitions = decl.isParameterized;
 	}
 	final bool addCapture(Identifier id,Scope startScope){
 		startScope.insertCapture(id,this);

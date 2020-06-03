@@ -1489,28 +1489,33 @@ class ForgetExp: Expression{
 }
 
 class ParamDefExp: Expression {
-	Expression definitions;
+	Expression defineExp;
 	Expression context;
 
-	this(Expression definitions, Expression context) {
-		this.definitions = definitions;
+	this(Expression defineExp, Expression context, Expression defExp = null) {
+		this.defineExp = defineExp;
 		this.context = context;
 	}
 	override ParamDefExp copyImpl(CopyArgs args){
-		return new ParamDefExp(definitions.copy(args), context.copy(args));
+		return new ParamDefExp(defineExp.copy(args), context.copy(args));
 	}
-	override string toString(){ return _brk("param "~definitions.toString()); }
+	override string toString(){ 
+		return _brk("param "~defineExp.toString()); 
+	}
 
 	override string kind() { return "param"; }
 
 	override Expression evalImpl(Expression ntype){
-		auto definitionsVal=definitions.eval();
+		auto definitionsVal=defineExp.eval();
 		auto contextVal=context.eval();
 		return new ParamDefExp(definitionsVal, contextVal);
 	}
 	mixin VariableFree; // TODO
 	override int componentsImpl(scope int delegate(Expression) dg){
-		return dg(definitions);
+		foreach(e; [defineExp, context]) {
+			if (auto r=dg(e)) return r;
+		}
+		return 0;
 	}
 }
 
