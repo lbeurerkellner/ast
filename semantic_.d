@@ -141,7 +141,7 @@ FunctionDef makeParameterInitializerFunction(ParamDefExp[] parameterDefinitions)
 Expression presemantic(Declaration expr,Scope sc){
 	bool success=true; // dummy
 	if(!expr.scope_) makeDeclaration(expr,success,sc);
-	if(auto dat=cast(DatDecl)expr){
+	if(DatDecl dat=cast(DatDecl)expr){
 		if(dat.dtype) return expr;
 		auto dsc=new DataScope(sc,dat);
 		assert(!dat.dscope_);
@@ -2063,74 +2063,11 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 			}
 		}
 		static if (language==dp) {
-			if (auto aggrTy=isDataTyId(fe.e.type)) {
-				if (aggrTy.isParameterized) {
-					const auto memberName = fe.f.name;
-					if(memberName=="params"){
-						auto paramExp = new ParameterSetHandleExp(fe.e);
-						return expr=expressionSemantic(paramExp, sc, ConstResult.no);
-					} else if (["move", "tangentVector", "tangentZero"].any!(n => n == memberName)) {
-						// TODO: think about whether this can be done in ProductTy
-						auto paramExp = new ParameterSetHandleExp(fe.e);
-						return expr=expressionSemantic(new FieldExp(paramExp, fe.f), sc, ConstResult.no);
-					}
-				}
+			if (auto e = parameterSetMemberSemantic(fe, sc)) {
+				return expr=e;
 			}
-			if (auto funTy=cast(FunTy)fe.e.type) {
-				if (funTy.isParameterized && funTy.isInitialised) {
-					const auto memberName = fe.f.name;
-					if(memberName=="params"){
-						auto paramExp = new ParameterSetHandleExp(fe.e);
-						return expr=expressionSemantic(paramExp, sc, ConstResult.no);
-					} else if (["move", "tangentVector", "tangentZero"].any!(n => n == memberName)) {
-						// TODO: think about whether this can be done in ProductTy
-						auto paramExp = new ParameterSetHandleExp(fe.e);
-						return expr=expressionSemantic(new FieldExp(paramExp, fe.f), sc, ConstResult.no);
-					}
-				}
-			}
-			// TODO: refactor all manifold member resolution into separate function
-			if (auto targetType=cast(Type)fe.e.type) {
-				const auto memberName = fe.f.name;
-				if (["move", "tangentVector", "tangentZero"].any!(n => n == memberName)) {
-					// check for recursive access 
-					// TODO: can we include move here and what happens on instance-level recursive access
-					// TODO: does this resolve to the wrong ManifoldDecl if the tangentVector of another type is accessed
-					if(ManifoldDecl manifoldDecl=sc.getManifoldDecl()) { // check if we are in manifold decl
-						if (memberName == "tangentVector") {
-							return expr=manifoldDecl.tangentVecExp=expressionSemantic(manifoldDecl.tangentVecExp, sc, ConstResult.yes);
-						} else if (memberName == "tangentZero") {
-							return expr=manifoldDecl.tangentZeroExp=expressionSemantic(manifoldDecl.tangentZeroExp, sc, ConstResult.yes);
-						}
-					}
-					
-					// check for type-level access (e.g. ℝ.tangentVector)
-					if (targetType==typeTy) {
-						auto elementType = cast(Type)fe.e;
-						if (auto manifoldImpl = elementType.manifold(sc)) {	
-							if (memberName == "tangentVector") {
-								return expr=manifoldImpl.tangentVecTy;
-							} else if (memberName == "tangentZero") {
-								return expr=manifoldImpl.tangentZeroExp;
-							}
-						}
-					}
-
-					// check for value-level access (e.g. (1.0).tangentVector)
-					if (auto manifoldImpl=targetType.manifold(sc)) {
-						if (memberName == "move") {
-							auto moveExp = new ManifoldMoveExp(fe.e, manifoldImpl);
-							moveExp.type = typeForDecl(manifoldImpl.moveOpDef);
-							moveExp.loc = fe.loc;
-							return expr=moveExp;
-						}
-						if (memberName == "tangentVector") {
-							return expr=manifoldImpl.tangentVecTy;
-						} else if (memberName == "tangentZero") {
-							return expr=manifoldImpl.tangentZeroExp;
-						}
-					}
-				}
+			if (auto e = manifoldMemberSemantic(fe, sc)) {
+				return expr=e;
 			}
 		}
 		if(aggrd){
@@ -2799,6 +2736,103 @@ Expression conditionSemantic(bool allowQuantum=false)(Expression e,Scope sc){
 		e.sstate=SemState.error;
 	}
 	return e;
+}
+
+static if (language==dp) Expression parameterSetMemberSemantic(FieldExp fe, Scope sc) {
+	const auto memberName = fe.f.name;
+	if (memberName != "params") {
+		return null;
+	}
+	// special case: parameterised AggrTy as manifolds
+	if (auto aggrTy=isDataTyId(fe.e.type)) {
+		if (aggrTy.isParameterized) {
+			auto paramExp = new ParameterSetHandleExp(fe.e);
+			return expressionSemantic(paramExp, sc, ConstResult.no);
+		}
+	}
+	// special case: initialised functions as manifolds
+	if (auto funTy=cast(FunTy)fe.e.type) {
+		if (funTy.isParameterized && funTy.isInitialised) {
+			auto paramExp = new ParameterSetHandleExp(fe.e);
+			return expressionSemantic(paramExp, sc, ConstResult.no);
+		}
+	}
+	return null;
+}
+
+Type typeOrDataType(Expression e) {
+	if (auto ty=cast(Type)e) {
+		return ty;
+	}
+	if (auto aggrTy=isDataTyId(e)) {
+		return aggrTy;
+	}
+	return null;
+}
+
+static if (language==dp) Expression manifoldMemberSemantic(FieldExp fe, Scope sc) {
+	const auto memberName = fe.f.name;
+	if (!["move", "tangentVector", "tangentZero"].any!(n => n == memberName)) {
+		return null;
+	}
+	
+	// standard case (direct manifold declaration for target type)
+	if (auto targetType=typeOrDataType(fe.e.type)) {
+		// check for recursive access 
+		// TODO: can we include move here and what happens on instance-level recursive access
+		// TODO: does this resolve to the wrong ManifoldDecl if the tangentVector of another type is accessed
+		if(ManifoldDecl manifoldDecl=sc.getManifoldDecl()) { // check if we are in manifold decl
+			if (memberName == "tangentVector") {
+				return manifoldDecl.tangentVecExp=expressionSemantic(manifoldDecl.tangentVecExp, sc, ConstResult.yes);
+			} else if (memberName == "tangentZero") {
+				return manifoldDecl.tangentZeroExp=expressionSemantic(manifoldDecl.tangentZeroExp, sc, ConstResult.yes);
+			}
+		}
+		
+		// check for type-level access (e.g. ℝ.tangentVector)
+		if (targetType==typeTy) {
+			auto elementType = cast(Type)fe.e;
+			if (auto manifoldImpl = elementType.manifold(sc)) {	
+				if (memberName == "tangentVector") {
+					return manifoldImpl.tangentVecTy;
+				} else if (memberName == "tangentZero") {
+					return manifoldImpl.tangentZeroExp;
+				}
+			}
+		}
+
+		// check for value-level access (e.g. (1.0).tangentVector)
+		if (auto manifoldImpl=targetType.manifold(sc)) {
+			if (memberName == "move") {
+				auto moveExp = new ManifoldMoveExp(fe.e, manifoldImpl);
+				moveExp.type = typeForDecl(manifoldImpl.moveOpDef);
+				moveExp.loc = fe.loc;
+				return moveExp;
+			}
+			if (memberName == "tangentVector") {
+				return manifoldImpl.tangentVecTy;
+			} else if (memberName == "tangentZero") {
+				return manifoldImpl.tangentZeroExp;
+			}
+		}
+	}
+	// special case: parameterised AggrTy as manifolds
+	if (auto aggrTy=isDataTyId(fe.e.type)) {
+		if (aggrTy.isParameterized) {
+			// TODO: think about whether this can be done in ProductTy
+			auto paramExp = new ParameterSetHandleExp(fe.e);
+			return expressionSemantic(new FieldExp(paramExp, fe.f), sc, ConstResult.no);
+		}
+	}
+	// special case: initialised functions as manifolds
+	if (auto funTy=cast(FunTy)fe.e.type) {
+		if (funTy.isParameterized && funTy.isInitialised) {
+			// TODO: think about whether this can be done in ProductTy
+			auto paramExp = new ParameterSetHandleExp(fe.e);
+			return expressionSemantic(new FieldExp(paramExp, fe.f), sc, ConstResult.no);
+		}
+	}
+	return null;
 }
 
 // traverses the tree of BinaryExp at shapeExpression and 
