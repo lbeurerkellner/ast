@@ -2791,7 +2791,8 @@ static if (language==dp) Expression manifoldMemberSemantic(FieldExp fe, Scope sc
 		
 		// check for type-level access (e.g. ℝ.tangentVector)
 		if (targetType==typeTy) {
-			auto elementType = cast(Type)fe.e;
+			auto elementType = typeOrDataType(fe.e);
+			assert(!!elementType);
 			if (auto manifoldImpl = elementType.manifold(sc)) {	
 				if (memberName == "tangentVector") {
 					return manifoldImpl.tangentVecTy;
