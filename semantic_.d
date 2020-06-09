@@ -2938,8 +2938,86 @@ FunctionDef functionDefSemantic(FunctionDef fd,Scope sc){
 		while(n in vars) n~="'";
 		vars[n]=[];
 	}
+	static if(language==dp) {
+		if (fd.isPullback) {
+			fd=pullbackSemantic(fd, sc);
+		}
+	}
+
 	if(fd.sstate!=SemState.error)
 		fd.sstate=SemState.completed;
+	return fd;
+}
+
+static if(language==dp) FunctionDef pullbackSemantic(FunctionDef fd, Scope sc) {
+	assert(fd.isPullback);
+	assert(fd.primalName !is null);
+	
+	FunctionDef primal = cast(FunctionDef)sc.lookup(fd.primalName,false,false,Lookup.probing);
+	if (!primal) {
+		sc.error(format("failed to resolve primal function %s", fd.primalName.toString), fd.name.loc);
+		fd.sstate=SemState.error;
+		return fd;
+	}
+
+	// establish linking of functions
+	fd.primal = functionDefSemantic(primal, sc);
+	primal.adjoint = fd;
+
+	// check pullback ftype
+	Type primalReturnTy = cast(Type)primal.ftype.cod.eval();
+	Type primalParamTy = cast(Type)primal.ftype.dom.eval();
+	assert(!!primalReturnTy);
+	assert(!!primalParamTy);
+	auto manifoldDom = primalReturnTy.manifold(sc);
+	auto manifoldCod = primalParamTy.manifold(sc);
+
+	if (!manifoldDom) {
+		sc.error(format("cannot define pullback for function %s with non-differentiable return type %s.", 
+			fd.primalName.toString, primalReturnTy.toString), fd.loc);
+		fd.sstate=SemState.error;
+		return fd;
+	}
+
+	if (!manifoldCod) {
+		sc.error(format("cannot define pullback for function %s with non-differentiable parameters %s.", 
+			fd.primalName.toString, primalParamTy.toString), fd.loc);
+		fd.sstate=SemState.error;
+		return fd;
+	}
+
+	// prepends the given type 'first' to a ProductTy domain as given by 'dom'
+	Expression prependingToDomain(Expression first, Expression dom) {
+		if (TupleTy tup = cast(TupleTy)dom) {
+			return tupleTy([first] ~ tup.types);
+		}
+		if (VectorTy vec = cast(VectorTy)dom) {
+			if (LiteralExp vecSize = cast(LiteralExp)vec.num) {
+				auto intVal = to!int(vecSize.lit.str);
+				if(intVal > 0 && vecSize.lit.type==Tok!"0") {
+					return tupleTy([first] ~ repeat(vec.next, intVal).array);
+				}
+			}
+		}
+		return tupleTy([first, dom]);
+	}
+
+	// check pullback signature
+	auto pullbackParamNames = ["v"] ~ primal.params.map!(p => p.name.name).array;
+	auto pullbackParamTypes = prependingToDomain(manifoldDom.tangentVecTy, primal.ftype.dom);
+	auto pullbackReturnType = manifoldCod.tangentVecTy;
+	auto isConst = [true] ~ primal.ftype.isConst;
+
+	auto pullbackTy = productTy(isConst, pullbackParamNames, pullbackParamTypes, pullbackReturnType, 
+		false, true, Annotation.none, true);
+	
+	if (!isSubtype(pullbackTy, fd.ftype)) {
+		sc.error(format("pullback for function %s requires signature %s not %s.", 
+			fd.primalName.toString, pullbackTy.toString, fd.ftype.toString), fd.loc);	
+		fd.sstate=SemState.error;
+		return fd;
+	}
+
 	return fd;
 }
 

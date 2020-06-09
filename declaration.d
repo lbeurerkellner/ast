@@ -136,12 +136,34 @@ class FunctionDef: Declaration{
 
 	static if (language==dp) {
 		bool isParameterized = true;
+		bool isPullback = false;
+		
+		Identifier primalName=null;
+		FunctionDef primal=null;
+		FunctionDef adjoint=null;
 	}
 
-	this(Identifier name, Parameter[] params, bool isTuple, Expression rret, CompoundExp body_)in{
+	static if (language==dp) {
+		this(Identifier name, Parameter[] params, bool isTuple, Expression rret, CompoundExp body_){
+			this(name, params, isTuple, false, rret, body_);
+		}
+		this(Identifier name, Parameter[] params, bool isTuple, bool isPullback, Expression rret, CompoundExp body_)in{
 		assert(isTuple||params.length==1);
-	}body{
-		super(name); this.params=params; this.isTuple=isTuple; this.rret=rret; this.body_=body_;
+		}body{
+			if (isPullback) {
+				super(new Identifier("pullback " ~ name.name));
+				this.primalName = name;
+			} else {
+				super(name);
+			}
+			this.params=params; this.isTuple=isTuple; this.isPullback=isPullback; this.rret=rret; this.body_=body_;
+		}
+	} else {
+		this(Identifier name, Parameter[] params, bool isTuple, Expression rret, CompoundExp body_)in{
+		assert(isTuple||params.length==1);
+		}body{
+			super(name); this.params=params; this.isTuple=isTuple; this.rret=rret; this.body_=body_;
+		}	
 	}
 	override FunctionDef copyImpl(CopyArgs args){
 		enforce(!args.preserveSemantic,"TODO");

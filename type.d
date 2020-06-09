@@ -29,6 +29,7 @@ NumericType whichNumeric(Expression t){ // TODO: more general solution
 }
 
 bool isNumeric(Expression t){
+	if (auto ty = cast(Type)t) t = unalias(ty);
 	return whichNumeric(t)!=NumericType.none;
 }
 
@@ -72,9 +73,12 @@ bool isSubtype(Expression lhs,Expression rhs){
 }
 
 Expression combineTypes(Expression lhs,Expression rhs,bool meet){ // TODO: more general solution // TODO: ⊤/⊥?
+	import std.format : format;
 	if(!lhs) return rhs;
 	if(!rhs) return lhs;
 	if(lhs == rhs) return lhs;
+	if(auto lhsAlias=cast(AliasTy)lhs) lhs = lhsAlias.target;
+	if(auto rhsAlias=cast(AliasTy)rhs) rhs = rhsAlias.target;
 	auto l=lhs.eval(), r=rhs.eval();
 	auto wl=whichNumeric(l), wr=whichNumeric(r);
 	if(wl==NumericType.none&&wr==NumericType.none) return l.combineTypesImpl(r,meet);
@@ -123,8 +127,7 @@ abstract class Type: Expression{
 			}
 			return mtype;
 		} else {
-			writeln(format("Could not find manifold declaration for type %s under name %s.", 
-				this.toString(), manifoldId.toString()));
+			// writeln(format("Could not find manifold declaration for type %s under name %s.", this.toString(), manifoldId.toString()));
 			return null;
 		}
 	}

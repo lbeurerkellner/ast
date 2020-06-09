@@ -693,6 +693,7 @@ struct Parser{
 			static if(language==psi) case Tok!"observe": return parseObserve();
 			static if(language==psi) case Tok!"cobserve": return parseCObserve();
 			static if(language==silq) case Tok!"forget": return parseForget();
+			static if (language==dp) case Tok!"pullback": return parseFunctionDef();
 			static if (language==dp) case Tok!"manifold": return parseManifoldDecl();
 			static if (language==dp) case Tok!"param": return parseParam();
 			static if (language==dp) case Tok!"init": return parseInit();
@@ -754,8 +755,19 @@ struct Parser{
 	}
 	FunctionDef parseFunctionDef(bool lambda=false,bool semicolon=!lambda)(){
 		mixin(SetLoc!FunctionDef);
+		static if (language==dp) bool isPullback = false;
 		static if(!lambda){
-			expect(Tok!"def");
+			static if (language==dp) {
+				if(ttype==Tok!"pullback") {
+					expect(Tok!"pullback");
+					isPullback = true;
+
+				} else {
+					expect(Tok!"def");
+				}
+			} else {
+				expect(Tok!"def");
+			}
 			auto name=parseIdentifier();
 		}else Identifier name=null; // TODO
 		bool isSquare=false;
@@ -803,7 +815,11 @@ struct Parser{
 			if(lambda&&ttype==Tok!".") nextToken();
 			body_=parseCompoundExp();
 		}
-		res=New!FunctionDef(name,cast(Parameter[])params[0],params[1]||params[0].length!=1,ret,body_);
+		bool isTuple=params[1]||params[0].length!=1;
+		
+		static if (language==dp) res=New!FunctionDef(name,cast(Parameter[])params[0],isTuple,isPullback,ret,body_);
+		else res=New!FunctionDef(name,cast(Parameter[])params[0],isTuple,ret,body_);
+		
 		res.isSquare=isSquare;
 		res.annotation=annotation;
 		return res;
