@@ -327,9 +327,15 @@ struct Parser{
 	}
 	bool skip(){nextToken(); return true;}
 	Identifier parseIdentifier(){ // Identifier(null) is the error value
-		string name;
-		if(ttype==Tok!"i") name=tok.name;
-		else{expectErr!"identifier"(); auto e=New!Identifier(string.init); e.loc=tok.loc; return e;}
+		string name;	
+		static if(language==dp) {
+			if (ttype==Tok!"i") name=tok.name;
+			else if (ttype==Tok!"pullback") name="pullback"; // support "pullback" as identifier
+			else { expectErr!"identifier"(); auto e=New!Identifier(string.init); e.loc=tok.loc; return e; }
+		} else {
+			if (ttype==Tok!"i") name=tok.name;
+			else { expectErr!"identifier"(); auto e=New!Identifier(string.init); e.loc=tok.loc; return e; }
+		}
 		displayExpectErr=true;
 		auto e=New!Identifier(name);
 		e.loc=tok.loc;
@@ -401,7 +407,8 @@ struct Parser{
 		mixin(SetLoc!Expression);
 		Token t; // DMD 2.072.1: hoisted to satisfy buggy deprecation code
 		switch(ttype){
-			case Tok!"i": return parseIdentifier();
+			case Tok!"i", Tok!"pullback": return parseIdentifier();
+			static if (language==dp) { case Tok!"manifold": { auto r=New!Identifier("manifold"); r.loc=tok.loc; nextToken(); return r; } }
 			case Tok!"*": auto r=New!Identifier("*"); r.loc=tok.loc; nextToken(); return r;
 			case Tok!"?": nextToken(); return res=New!PlaceholderExp(parseIdentifier());
 			case Tok!"``", Tok!"``c", Tok!"``w", Tok!"``d": // adjacent string tokens get concatenated
@@ -693,8 +700,14 @@ struct Parser{
 			static if(language==psi) case Tok!"observe": return parseObserve();
 			static if(language==psi) case Tok!"cobserve": return parseCObserve();
 			static if(language==silq) case Tok!"forget": return parseForget();
-			static if (language==dp) case Tok!"pullback": return parseFunctionDef();
-			static if (language==dp) case Tok!"manifold": return parseManifoldDecl();
+			static if (language==dp) case Tok!"pullback": {
+				if (aheadLooksLikePullbackDecl()) return parseFunctionDef();
+				else break;
+			}
+			static if (language==dp) case Tok!"manifold": {
+				if (aheadLooksLikeManifoldDecl()) return parseManifoldDecl();
+				else break;
+			}
 			static if (language==dp) case Tok!"param": return parseParam();
 			static if (language==dp) case Tok!"init": return parseInit();
 			default: break;
@@ -753,6 +766,9 @@ struct Parser{
 		fd.isParameterized=false;
 		return fd;
 	}
+	static if(language==dp) bool aheadLooksLikePullbackDecl() {
+		return ttype==Tok!"pullback" && peek.type==Tok!"i";
+	}
 	FunctionDef parseFunctionDef(bool lambda=false,bool semicolon=!lambda)(){
 		mixin(SetLoc!FunctionDef);
 		static if (language==dp) bool isPullback = false;
@@ -761,7 +777,6 @@ struct Parser{
 				if(ttype==Tok!"pullback") {
 					expect(Tok!"pullback");
 					isPullback = true;
-
 				} else {
 					expect(Tok!"def");
 				}
@@ -1049,9 +1064,13 @@ struct Parser{
 		auto target = parseExpression();
 		return res=New!InitExp(target);
 	}
-	static if(language==dp) ManifoldDecl parseManifoldDecl(){
-		mixin(SetLoc!ManifoldDecl);
+	static if(language==dp) bool aheadLooksLikeManifoldDecl() {
+		return ttype==Tok!"manifold" && peek.type==Tok!"i";
+	}
+	static if(language==dp) Expression parseManifoldDecl(){
+		mixin(SetLoc!Expression);
 		expect(Tok!"manifold");
+
 		auto name=parseIdentifier();
 		auto body_=parseCompoundExp!CompoundExp();
 

@@ -26,7 +26,16 @@ abstract class Node{
 
 
 abstract class Expression: Node{
-	Expression type;
+	Expression _type;
+
+	@property Expression type() {
+		return _type;
+	}
+
+	@property void type(Expression t) {
+		this._type = t;
+	}
+
 	int brackets=0;
 
 	struct CopyArgs{
@@ -58,7 +67,8 @@ abstract class Expression: Node{
 		auto r=evalImpl(ntype);
 		if(!r.type) r.type=ntype;
 		else if(r is this) return r;
-		else assert(r.type==ntype,text(this," ",typeid(this)));
+		// subtype check allows refinement of type by evaluation
+		else assert(isSubtype(r.type, ntype),text("Expected evaluated type ", ntype, " but got ", r.type));
 		r.loc=loc;
 		r.sstate=SemState.completed;
 		return r;
@@ -72,7 +82,12 @@ abstract class Expression: Node{
 		auto r=substituteImpl(subst);
 		if(type){
 			if(type == this) r.type=r;
-			else r.type=type.substitute(subst);
+			else {
+				auto substType = type.substitute(subst);
+				if (r.type is null) r.type=substType;
+				// subtype check allows refinement of type by substitution
+				else assert(isSubtype(r.type, substType),text("Expected substituted type ", substType, " but got ", r.type));
+			}
 		}
 		return r;
 	}
@@ -319,6 +334,7 @@ class Identifier: Expression{
 	string name;
 	@property auto ptr(){return name.ptr;}
 	@property auto length(){return name.length;}
+	
 	this(string name){
 		static string[string] uniq;
 		auto n=uniq.get(name,null);
@@ -361,13 +377,13 @@ class Identifier: Expression{
 		if(name !in subst) return false;
 		if(subst[name]==this) return false;
 		static if(language==silq){
-			if(type==typeTy&&rhs.type==typeTy)
+			if(isTypeTy(type)&&isTypeTy((rhs.type)))
 				if(rhs.isClassical()<classical) return false;
 		}
 		if(subst[name]){
 			if(!subst[name].unify(rhs,subst,meet))
 				return false;
-			if(subst[name].type==typeTy&&rhs.type==typeTy)
+			if(subst[name].type.isTypeTy&&rhs.type.isTypeTy)
 				if(auto cmb=combineTypes(subst[name],rhs,meet)) // TODO: good?
 					subst[name]=cmb;
 			return true;
@@ -384,16 +400,16 @@ class Identifier: Expression{
 	}
 
 	override bool isClassical(){
-		assert(type==typeTy);
+		assert(type.isTypeTy);
 		return classical;
 	}
 	override bool hasClassicalComponent(){
-		assert(type==typeTy);
+		assert(type.isTypeTy);
 		return classical;
 	}
 	override Expression getClassical(){
 		static if(language==silq){
-			assert(type==typeTy);
+			assert(type.isTypeTy);
 			if(classical) return this;
 			if(!meaning) return varTy(name,typeTy,true);
 			auto r=new Identifier(name);
@@ -720,7 +736,7 @@ class CallExp: Expression{
 	override bool isSubtypeImpl(Expression rhs){
 		if(this == rhs) return true;
 		auto rcall = cast(CallExp)rhs;
-		if(rcall && type==typeTy && rhs.type==typeTy && e==rcall.e && isSquare==rcall.isSquare){
+		if(rcall && type.isTypeTy && rhs.type.isTypeTy && e==rcall.e && isSquare==rcall.isSquare){
 			if(!isClassical_ && rcall.isClassical_) return false;
 			if(auto id=cast(Identifier)e){
 				if(id.meaning){
@@ -752,7 +768,7 @@ class CallExp: Expression{
 	override Expression combineTypesImpl(Expression rhs, bool meet){
 		if(this == rhs) return this;
 		auto rcall = cast(CallExp)rhs;
-		if(rcall && type==typeTy && rhs.type==typeTy && e==rcall.e && isSquare==rcall.isSquare){
+		if(rcall && type.isTypeTy && rhs.type.isTypeTy && e==rcall.e && isSquare==rcall.isSquare){
 			if(e==rcall.e&&arg==rcall.arg){
 				if(isClassical_ && !rcall.isClassical_){
 					return meet?this:rcall;
@@ -803,7 +819,7 @@ class CallExp: Expression{
 	}
 	override Expression getClassical(){
 		static if(language==silq){
-			assert(type==typeTy);
+			assert(type.isTypeTy);
 			if(auto r=super.getClassical()) return r;
 			auto r=new CallExp(e,arg,isSquare,true);
 			r.type=typeTy;

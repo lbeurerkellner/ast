@@ -215,7 +215,7 @@ Expression presemantic(Declaration expr,Scope sc){
 				assert(dsc.decl.isTuple||args.length==1);
 				ctxty=callSemantic(new CallExp(ctxty,dsc.decl.isTuple?new TupleExp(args):args[0],true,false),sc,ConstResult.no);
 				ctxty.sstate=SemState.completed;
-				assert(ctxty.type == typeTy);
+				assert(ctxty.type.isTypeTy);
 			}
 			if(dsc.decl.name.name==fd.name.name){
 				assert(!!fd.body_.blscope_);
@@ -519,6 +519,10 @@ Expression builtIn(Identifier id,Scope sc){
 		id.type=typeTy();
 		if(id.name=="string") return stringTy(true);
 		if (id.name=="any") return anyTy(true);
+	static if(language==dp) case "manifold": {
+		id.type=typeTy;
+		return manifoldTypeTy();
+	}
 	default: return null;
 	}
 	id.type=t;
@@ -1045,7 +1049,7 @@ Expression defineSemantic(DefineExp be,Scope sc){
 			propErr(be,de);
 		}
 		if(cast(TopScope)sc){
-			if(!be.e2.isConstant() && !cast(PlaceholderExp)be.e2 && be.e2.type!=typeTy){
+			if(!be.e2.isConstant() && !cast(PlaceholderExp)be.e2 && !be.e2.type.isTypeTy){
 				sc.error("global constant initializer must be a constant",e2orig.loc);
 				if(de){ de.setError(); be.sstate=SemState.error; }
 			}
@@ -1209,7 +1213,7 @@ bool checkAssignable(Declaration meaning,Location loc,Scope sc,bool quantumAssig
 				return false;
 			}
 		}
-		if(vd.vtype==typeTy){
+		if(vd.vtype.isTypeTy){
 			sc.error("cannot reassign type variables", loc);
 			return false;
 		}
@@ -1544,7 +1548,7 @@ Expression callSemantic(CallExp ce,Scope sc,ConstResult constResult){
 					if(auto decl=cast(DatDecl)id.meaning){
 						if(auto constructor=cast(FunctionDef)decl.body_.ascope_.lookup(decl.name,false,false,Lookup.consuming)){
 							if(auto cty=cast(FunTy)typeForDecl(constructor)){
-								assert(ft.cod is typeTy);
+								assert(ft.cod.isTypeTy);
 								nft=productTy(ft.isConst,ft.names,ft.dom,cty,ft.isSquare,ft.isTuple,ft.annotation,true);
 							}
 						}
@@ -1971,7 +1975,7 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 			sc.error("invalid forward reference",id.loc);
 			id.sstate=SemState.error;
 		}
-		if(id.type != typeTy()){
+		if(!id.type.isTypeTy){
 			if(auto dsc=isInDataScope(meaning.scope_)){
 				if(auto decl=sc.getDatDecl()){
 					if(decl is dsc.decl){
@@ -1987,7 +1991,7 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 		}
 		auto vd=cast(VarDecl)meaning;
 		if(vd){
-			if(cast(TopScope)vd.scope_||vd.vtype==typeTy&&vd.initializer){
+			if(cast(TopScope)vd.scope_||vd.vtype.isTypeTy&&vd.initializer){
 				if(!vd.initializer||vd.initializer.sstate!=SemState.completed)
 					id.sstate=SemState.error;
 				id.substitute=true;
@@ -2122,7 +2126,7 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 			ce.loc=idx.loc;
 			return expr=callSemantic(ce,sc,ConstResult.no);
 		}
-		if(idx.e.type==typeTy){
+		if(idx.e.type.isTypeTy){
 			assert(!replaceIndex);
 			if(auto tty=typeSemantic(expr,sc))
 				return tty;
@@ -2456,7 +2460,7 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 		if(e.sstate==SemState.error) {
 			return e;
 		}
-		if(processedE1.type==typeTy&&name=="power"){
+		if(processedE1.type.isTypeTy&&name=="power"){
 			if (auto vt = tensorTypeSemantic(processedE1, e2, sc)) {
 				propErr(vt,e);
 				e.type = vt;
@@ -2491,7 +2495,7 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 	if(auto ae=cast(UMinusExp)expr) return expr=handleUnary!minusBitNotType("minus",ae,ae.e);
 	if(auto ae=cast(UNotExp)expr){
 		ae.e=expressionSemantic(ae.e,sc,ConstResult.yes);
-		static if(language==silq) if(ae.e.type==typeTy){
+		static if(language==silq) if(ae.e.type.isTypeTy){
 			if(auto ty=typeSemantic(ae.e,sc)){
 				if(ty.sstate==SemState.completed){
 					if(auto r=ty.getClassical()){
@@ -2775,7 +2779,7 @@ static if (language==dp) Expression manifoldMemberSemantic(FieldExp fe, Scope sc
 	if (!["move", "tangentVector", "tangentZero"].any!(n => n == memberName)) {
 		return null;
 	}
-	
+
 	// standard case (direct manifold declaration for target type)
 	if (auto targetType=typeOrDataType(fe.e.type)) {
 		// check for recursive access 
@@ -2790,9 +2794,21 @@ static if (language==dp) Expression manifoldMemberSemantic(FieldExp fe, Scope sc
 		}
 		
 		// check for type-level access (e.g. ℝ.tangentVector)
-		if (targetType==typeTy) {
+		if (targetType.isTypeTy) {
 			auto elementType = typeOrDataType(fe.e);
+
+			if (!elementType) {
+				// TODO find better criterion to detect type variables here
+				if (auto ident = cast(Identifier)fe.e) {
+					if ((cast(ManifoldTypeTy)targetType) !is null) {
+						return new OpaqueTangentVecTy(fe.e);
+					} else {
+						return null;
+					}
+				}
+			}
 			assert(!!elementType);
+
 			if (auto manifoldImpl = elementType.manifold(sc)) {	
 				if (memberName == "tangentVector") {
 					return manifoldImpl.tangentVecTy;
@@ -3052,7 +3068,7 @@ static if (language==dp) ManifoldDecl manifoldDeclSemantic(ManifoldDecl maniDecl
 	maniDecl.sstate = SemState.started;
 
 	Type tangentVecTy = null;
-	Type manifoldImpl = null;
+	Type elementType = null;
 	Expression tangentZeroExp = null;
 	
 	// check correct resolution of manifold type
@@ -3064,18 +3080,23 @@ static if (language==dp) ManifoldDecl manifoldDeclSemantic(ManifoldDecl maniDecl
 		maniDecl.sstate = SemState.error;
 		return maniDecl;
 	}
+
 	auto typeRefAsIdentifier = cast(Identifier)typeRef;
 	auto typeRefAsType = cast(Type)typeRef;
 
 	if (typeRefAsType) {
-		manifoldImpl = typeRefAsType;
+		elementType = typeRefAsType;
 	} else if (auto datDecl = cast(DatDecl)(typeRefAsIdentifier ? typeRefAsIdentifier.meaning : null)) {
-		manifoldImpl = datDecl.dtype;
+		elementType = datDecl.dtype;
 	} else if (typeRef.sstate != SemState.error) {
 		sc.error(MANIFOLD_TYPE_ERROR_MSG, maniDecl.typeName.loc);
 		maniDecl.sstate = SemState.error;
 		return maniDecl;
 	}
+
+	// flag type as manifold
+	elementType.manifoldDeclScope = sc;
+	elementType.type = manifoldTypeTy(); // globally upgrade elementType to a manifold type
 
 	// type check tangent vector declaration
 	if (auto tangentVectorExp=maniDecl.tangentVecExp) {
@@ -3084,7 +3105,7 @@ static if (language==dp) ManifoldDecl manifoldDeclSemantic(ManifoldDecl maniDecl
 			sc.error("manifold tangent vector must be a type", tangentVectorExp.loc);
 			tangentVectorExp.sstate = SemState.error;
 		} else {
-			tangentVecTy = aliasTy(manifoldImpl.toString ~ ".tangentVector", tangentVecTy);
+			tangentVecTy = aliasTy(elementType.toString ~ ".tangentVector", tangentVecTy);
 		}
 	}
 	// type check tangent zero declaration
@@ -3100,11 +3121,11 @@ static if (language==dp) ManifoldDecl manifoldDeclSemantic(ManifoldDecl maniDecl
 	}
 	// type check move operation signature and bind 'this' in move's function scope
 	if (auto moveOpDef = maniDecl.moveOpDef) {
-		maniDecl.moveOpDef = manifoldMoveOpSemantic(moveOpDef, manifoldImpl, tangentVecTy, maniDecl.declScope);
+		maniDecl.moveOpDef = manifoldMoveOpSemantic(moveOpDef, elementType, tangentVecTy, maniDecl.declScope);
 	}
 
 	maniDecl.type = unit;
-	maniDecl.mtype = new Manifold(manifoldImpl, maniDecl.moveOpDef, tangentVecTy, tangentZeroExp);
+	maniDecl.mtype = new Manifold(elementType, maniDecl.moveOpDef, tangentVecTy, tangentZeroExp);
 	maniDecl.mtype.manifoldDecl = maniDecl;
 
 	if(maniDecl.sstate!=SemState.error)
@@ -3113,10 +3134,10 @@ static if (language==dp) ManifoldDecl manifoldDeclSemantic(ManifoldDecl maniDecl
 	return maniDecl;
 }
 
-static if (language==dp) FunctionDef manifoldMoveOpSemantic(FunctionDef moveOpDef, Type manifoldImpl, Type tangentVecTy, Scope sc) {
+static if (language==dp) FunctionDef manifoldMoveOpSemantic(FunctionDef moveOpDef, Type elementType, Type tangentVecTy, Scope sc) {
 	auto moveOpTy = productTy([true], ["along"], tangentVecTy, unit, false, false, Annotation.none, true);
 		
-	moveOpDef.thisVar = addVar("this",manifoldImpl,moveOpDef.loc,moveOpDef.body_.blscope_); // add 'this' var
+	moveOpDef.thisVar = addVar("this",elementType,moveOpDef.loc,moveOpDef.body_.blscope_); // add 'this' var
 	moveOpDef = functionDefSemantic(moveOpDef, sc);
 
 	if (!isSubtype(moveOpDef.ftype, moveOpTy)) {
@@ -3317,7 +3338,7 @@ Expression typeSemantic(Expression expr,Scope sc)in{assert(!!expr&&!!sc);}body{
 	}
 	auto e=expressionSemantic(expr,sc,ConstResult.no);
 	if(!e) return null;
-	if(e.type==typeTy) return e;
+	if(e.type.isTypeTy) return e;
 	if(expr.sstate!=SemState.error){
 		auto id=cast(Identifier)expr;
 		if(id&&id.meaning){

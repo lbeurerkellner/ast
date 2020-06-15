@@ -63,9 +63,8 @@ bool isRat(Expression e){ return preludeNumericTypeName(e)=="rat"; }
 bool isSubtype(Expression lhs,Expression rhs){
 	if(!lhs||!rhs) return false;
 	if(cast(AnyTy)rhs !is null) return true;
-	if(auto lhsAlias=cast(AliasTy)lhs) lhs = lhsAlias.target;
-	if(auto rhsAlias=cast(AliasTy)rhs) rhs = rhsAlias.target;
 	auto l=lhs.eval(), r=rhs.eval();
+	l = unalias(l); r = unalias(r);
 	auto wl=whichNumeric(l), wr=whichNumeric(r);
 	if(!lhs.isClassical()&&rhs.isClassical()) return false;
 	if(wl==NumericType.none||wr==NumericType.none) return l.isSubtypeImpl(r);
@@ -77,8 +76,7 @@ Expression combineTypes(Expression lhs,Expression rhs,bool meet){ // TODO: more 
 	if(!lhs) return rhs;
 	if(!rhs) return lhs;
 	if(lhs == rhs) return lhs;
-	if(auto lhsAlias=cast(AliasTy)lhs) lhs = lhsAlias.target;
-	if(auto rhsAlias=cast(AliasTy)rhs) rhs = rhsAlias.target;
+	lhs = unalias(lhs); rhs = unalias(rhs);
 	auto l=lhs.eval(), r=rhs.eval();
 	auto wl=whichNumeric(l), wr=whichNumeric(r);
 	if(wl==NumericType.none&&wr==NumericType.none) return l.combineTypesImpl(r,meet);
@@ -108,8 +106,13 @@ abstract class Type: Expression{
 		return super.isSubtypeImpl(other);
 	}
 
-	final Manifold manifold(Scope sc) {
-		return memoize!((Type manifoldImpl, Scope sc){
+	Scope manifoldDeclScope = null;
+	@property bool isManifoldType() {
+		return manifoldDeclScope !is null;
+	}
+
+	final Manifold manifold(Scope sc = null) {
+		return memoize!((Type type, Scope sc) {
 			return this.manifoldImpl(sc);
 		})(this, sc);
 	}
@@ -117,6 +120,11 @@ abstract class Type: Expression{
 	// returns the manifold implementation for this type or null if none was defined
 	Manifold manifoldImpl(Scope sc) {
 		import std.format : format;
+		if (!sc) sc = manifoldDeclScope;
+		if (!sc) {
+			writeln("Attempting to obtain manifold impl for " ~ this.toString ~ " without an active scope.");
+			return null;
+		}
 
 		Identifier manifoldId = new Identifier("manifold " ~ this.toString());
 		if (auto decl = cast(ManifoldDecl)sc.lookup(manifoldId,false,true,Lookup.probing)) {
@@ -307,6 +315,20 @@ class ℝTy: Type{
 	private this(bool classical){
 		static if(language==silq) this.classical=classical;
 	}
+
+	override @property Expression type() {
+		return this._type;
+	}
+	override @property void type(Expression t) {
+		assert(t.isTypeTy);
+		if (this.type !is null) {
+			bool typeIsManifold = cast(ManifoldTypeTy)this.type !is null;
+			bool newTypeIsManifold = cast(ManifoldTypeTy)t !is null;
+			assert(!typeIsManifold || newTypeIsManifold);
+		}
+		this._type = t;
+	}
+
 	override ℝTy copyImpl(CopyArgs args){
 		return this;
 	}
@@ -483,7 +505,7 @@ class TupleTy: Type,ITupleTy{
 	Expression opIndex(size_t i){ return types[i]; }
 	Expression opSlice(size_t l,size_t r){ return tupleTy(types[l..r]); }
 	private this(Expression[] types)in{
-		assert(types.all!(x=>x.type==typeTy));
+		assert(types.all!(x=>x.type.isTypeTy));
 		assert(!types.length||!types[1..$].all!(x=>x==types[0]));
 	}body{
 		this.types=types;
@@ -515,7 +537,6 @@ class TupleTy: Type,ITupleTy{
 		auto tt=rhs.isTupleTy();
 		if(!tt||types.length!=tt.length) return false;
 		return all!(i=>types[i].unify(tt[i],subst,meet))(iota(types.length));
-
 	}
 	override bool opEquals(Object o){
 		if(auto r=cast(TupleTy)o)
@@ -563,7 +584,7 @@ class TupleTy: Type,ITupleTy{
 		return 0;
 	}
 	override Expression evalImpl(Expression ntype){
-		assert(ntype==typeTy);
+		assert(ntype.isTypeTy);
 		auto ntypes=types.map!(t=>t.eval()).array;
 		if(ntypes==types) return this;
 		return tupleTy(ntypes);
@@ -573,7 +594,7 @@ class TupleTy: Type,ITupleTy{
 Type unit(){ return tupleTy([]); }
 
 Type tupleTy(Expression[] types)in{
-	assert(types.all!(x=>x.type==typeTy));
+	assert(types.all!(x=>x.type.isTypeTy));
 }body{
 	import ast.lexer: Token,Tok;
 	if(types.length&&types.all!(x=>x==types[0])){
@@ -592,7 +613,7 @@ size_t numComponents(Expression t){
 class ArrayTy: Type{
 	Expression next;
 	private this(Expression next)in{
-		assert(next.type==typeTy);
+		assert(next.type.isTypeTy);
 	}body{
 		this.next=next;
 	}
@@ -619,7 +640,7 @@ class ArrayTy: Type{
 		return false;
 	}
 	override ArrayTy evalImpl(Expression ntype){
-		assert(ntype==typeTy);
+		assert(ntype.isTypeTy);
 		return arrayTy(next.eval());
 	}
 	override bool opEquals(Object o){
@@ -673,7 +694,7 @@ class ArrayTy: Type{
 }
 
 ArrayTy arrayTy(Expression next)in{
-	assert(next&&next.type==typeTy);
+	assert(next&&next.type.isTypeTy);
 }body{
 	return memoize!((Expression next)=>new ArrayTy(next))(next);
 }
@@ -690,7 +711,9 @@ class VectorTy: Type, ITupleTy{
 	}
 	@property Type elementType(){
 		auto nextTy = cast(Type)next;
-		assert(nextTy !is null); // .next must be a Type
+		// next may not be a type in case of a generic shape
+		if(nextTy is null) return null;
+
 		if (auto nextVecTy=cast(VectorTy)unalias(nextTy)) {
 			return nextVecTy.elementType;
 		}
@@ -730,10 +753,15 @@ class VectorTy: Type, ITupleTy{
 		return vectorTy(next,len);
 	}
 	private this(Expression next,Expression num)in{
-		assert(next.type==typeTy);
+		assert(next.type.isTypeTy);
 	}body{
 		this.next=next;
 		this.num=num;
+
+		if (Type elementType = cast(Type)this.elementType) {
+			this.manifoldDeclScope = elementType.manifoldDeclScope;
+			this.type = elementType.type;
+		}
 	}
 	override string toString(){
 		bool p=cast(FunTy)next||next.isTupleTy&&next!is unit;
@@ -766,7 +794,7 @@ class VectorTy: Type, ITupleTy{
 		return false;
 	}
 	override VectorTy evalImpl(Expression ntype){
-		assert(ntype==typeTy);
+		assert(ntype.isTypeTy);
 		return vectorTy(next.eval(),num.eval());
 	}
 	override bool opEquals(Object o){
@@ -869,7 +897,7 @@ VectorTy tensorTy(Expression dtype, Expression[] shape) {
 }
 
 VectorTy vectorTy(Expression next, Expression num)in{
-	assert(next&&next.type==typeTy);
+	assert(next&&next.type.isTypeTy);
 	assert(num && (
 		isSubtype(num.type,ℕt(true)) || 
 		isSubtype(num.type,arrayTy(ℕt(true))
@@ -1085,7 +1113,7 @@ class ProductTy: Type{
 			assert(names.length==1);
 			assert(isConst.length==1);
 		}
-		assert(cod.type==typeTy,text(cod));
+		assert(cod.type.isTypeTy,text(cod));
 	}body{
 		this.isConst=isConst; // TODO: don't track this in PSI
 		this.names=names; this.dom=dom; this.cod=cod;
@@ -1414,7 +1442,7 @@ class ProductTy: Type{
 		return 0; // TODO: ok?
 	}
 	override Expression evalImpl(Expression ntype){
-		assert(ntype==typeTy);
+		assert(ntype.isTypeTy);
 		auto ndom=dom.eval(),ncod=cod.eval();
 		if(ndom==dom&&ncod==cod) return this;
 		return productTy(isConst,names,ndom,ncod,isSquare,isTuple,annotation,isClassical_);
@@ -1498,6 +1526,38 @@ bool hasFreeIdentifier(Expression self,string name){
 	return false;
 }
 
+// metatype with additional constraint on types having manifold capabilities
+class ManifoldTypeTy: Type{
+	this(){ this.type=this; super(); }
+	override ManifoldTypeTy copyImpl(CopyArgs args){
+		return this;
+	}
+	override string toString(){
+		return "manifold *";
+	}
+	override bool opEquals(Object o){
+		return !!cast(TypeTy)o;
+	}
+	override bool isClassical(){
+		return true; // quantum superposition of multiple types not allowed
+	}
+	override bool hasClassicalComponent(){
+		return true;
+	}
+	override Expression evalImpl(Expression ntype){ return this; }
+	mixin VariableFree;
+	override int componentsImpl(scope int delegate(Expression) dg){
+		return 0;
+	}
+	override bool isSubtypeImpl(Expression other) {
+		return !!cast(TypeTy)other || !!cast(ManifoldTypeTy)other;
+	}
+
+	override Expression substituteImpl(Expression[string] subst) {
+		return this;
+	}
+}
+
 class TypeTy: Type{
 	this(){ this.type=this; super(); }
 	override TypeTy copyImpl(CopyArgs args){
@@ -1520,9 +1580,26 @@ class TypeTy: Type{
 	override int componentsImpl(scope int delegate(Expression) dg){
 		return 0;
 	}
+	override bool isSubtypeImpl(Expression other) {
+		return !!cast(TypeTy)other;
+	}
+
+	override Expression substituteImpl(Expression[string] subst) {
+		return this;
+	}
 }
-private TypeTy theTypeTy;
-TypeTy typeTy(){ return theTypeTy?theTypeTy:(theTypeTy=new TypeTy()); }
+TypeTy typeTy(){ 
+	return memoize!(()=>new TypeTy())();
+}
+
+ManifoldTypeTy manifoldTypeTy(){
+	return memoize!(()=>new ManifoldTypeTy())();
+}
+
+// short-hand for isSubtype(ty, typeTy)
+bool isTypeTy(Expression ty) {
+	return isSubtype(ty, typeTy);
+}
 
 class Manifold: Node {
 	Type elementType;
@@ -1601,7 +1678,7 @@ AliasTy aliasTy(string name, Type target){
 	return memoize!((string name, Type target)=>new AliasTy(name, target))(name, target);
 }
 
-Type unalias(Type type) {
+T unalias(T)(T type) {
 	if (auto aliasType = cast(AliasTy)type) {
 		return aliasType.target;
 	}
@@ -1648,9 +1725,13 @@ class ParameterSetTy : Type {
 		return this == other;
 	}
 
+	override @property bool isManifoldType() {
+		return true;
+	}
+	
 	override Manifold manifoldImpl(Scope sc) {
 		auto tangentVecTy = opaqueTangentVecTy(this);
-		
+
 		auto tangentZeroExp = new FieldExp(new ParameterSetHandleExp(target), new Identifier("tangentZero"));
 		tangentZeroExp.type = tangentVecTy;
 
@@ -1675,7 +1756,7 @@ class OpaqueTangentVecTy : Type {
 	enum classical=true;
 	Expression elementTy;
 
-	private this(Expression elementTy){
+	this(Expression elementTy){
 		super();
 		
 		this.elementTy = elementTy;
@@ -1685,7 +1766,7 @@ class OpaqueTangentVecTy : Type {
 		return new OpaqueTangentVecTy(elementTy.copy());
 	}
 	override string toString(){
-		return elementTy.toString ~ ".tangentVector";
+		return "tangentVector[" ~  elementTy.toString ~ "]";
 	}
 	override bool opEquals(Object o){
 		auto otherParamSetTy = cast(OpaqueTangentVecTy)o;
@@ -1700,7 +1781,12 @@ class OpaqueTangentVecTy : Type {
 	override bool hasClassicalComponent(){
 		return true;
 	}
-	override Expression evalImpl(Expression ntype){ 
+	override Expression evalImpl(Expression ntype){
+		if (auto elementType = cast(Type)elementTy.eval()) {
+			if (auto manifoldImpl = elementType.manifold()) {	
+				return manifoldImpl.tangentVecTy;
+			}
+		}
 		return new OpaqueTangentVecTy(elementTy.eval()); 
 	}
 	mixin VariableFree;
@@ -1709,10 +1795,41 @@ class OpaqueTangentVecTy : Type {
 	}
 
 	override bool isSubtypeImpl(Expression other) {
-		return this == other;
+		if (auto otherOpVecTy = cast(OpaqueTangentVecTy)other) {
+			return isSubtype(this.elementTy, otherOpVecTy.elementTy);
+		}
+		if (auto elementTy = cast(Type)this.elementType) {
+			if (elementTy.isManifoldType) {
+				return isSubtype(elementTy.manifold().tangentVecTy, other);
+			}
+		}
+		return super.isSubtypeImpl(other);
+	}
+
+	override Expression combineTypesImpl(Expression r,bool meet){
+		if (auto other = cast(OpaqueTangentVecTy)r) {
+			auto combElementTy = elementTy.combineTypesImpl(other.elementTy, meet);
+			auto res = new OpaqueTangentVecTy(combElementTy);
+			return res;
+		}
+		return null;
+	}
+
+	override bool unifyImpl(Expression rhs,ref Expression[string] subst,bool meet){
+		auto lhs = this.substitute(subst);
+		if (isSubtype(lhs, rhs)) {
+			return true;
+		}
+		return false;
+	}
+
+	override Expression substituteImpl(Expression[string] subst) {
+		auto r = opaqueTangentVecTy(this.elementTy.substitute(subst));
+		r.loc = this.loc;
+		return r.eval();
 	}
 }
 
-OpaqueTangentVecTy opaqueTangentVecTy(Type elementTy){
+OpaqueTangentVecTy opaqueTangentVecTy(Expression elementTy){
 	return memoize!((Expression elementTy)=>new OpaqueTangentVecTy(elementTy))(elementTy);
 }
