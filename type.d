@@ -106,12 +106,18 @@ abstract class Type: Expression{
 		return super.isSubtypeImpl(other);
 	}
 
-	Scope manifoldDeclScope = null;
-	@property bool isManifoldType() {
-		return manifoldDeclScope !is null;
+	private bool _isManifoldType = false;
+	void flagAsManifoldType() { 
+		_isManifoldType = true;
+		type = manifoldTypeTy();
 	}
+	
+	@property bool isManifoldType() { return _isManifoldType; }
 
-	final Manifold manifold(Scope sc = null) {
+	final Manifold manifold(Scope sc) {
+		if (!isManifoldType) return null;
+		assert(sc);
+
 		return memoize!((Type type, Scope sc) {
 			return this.manifoldImpl(sc);
 		})(this, sc);
@@ -120,11 +126,6 @@ abstract class Type: Expression{
 	// returns the manifold implementation for this type or null if none was defined
 	Manifold manifoldImpl(Scope sc) {
 		import std.format : format;
-		if (!sc) sc = manifoldDeclScope;
-		if (!sc) {
-			writeln("Attempting to obtain manifold impl for " ~ this.toString ~ " without an active scope.");
-			return null;
-		}
 
 		Identifier manifoldId = new Identifier("manifold " ~ this.toString());
 		if (auto decl = cast(ManifoldDecl)sc.lookup(manifoldId,false,true,Lookup.probing)) {
@@ -314,19 +315,6 @@ class ℝTy: Type{
 	else private enum classical=true;
 	private this(bool classical){
 		static if(language==silq) this.classical=classical;
-	}
-
-	override @property Expression type() {
-		return this._type;
-	}
-	override @property void type(Expression t) {
-		assert(t.isTypeTy);
-		if (this.type !is null) {
-			bool typeIsManifold = cast(ManifoldTypeTy)this.type !is null;
-			bool newTypeIsManifold = cast(ManifoldTypeTy)t !is null;
-			assert(!typeIsManifold || newTypeIsManifold);
-		}
-		this._type = t;
 	}
 
 	override ℝTy copyImpl(CopyArgs args){
@@ -731,6 +719,13 @@ class VectorTy: Type, ITupleTy{
 			return [num];
 		}
 	}
+	override @property bool isManifoldType() {
+		if (auto ety = elementType) {
+			return ety.isManifoldType;
+		} else {
+			return false;
+		}
+	}
 	@property TupleExp shapeTuple(){
 		auto shapeExprs = shape;
 		if (!shapeExprs.each!(se => isSubtype(se.type, ℕt(true)))) {
@@ -752,16 +747,14 @@ class VectorTy: Type, ITupleTy{
 		auto len=LiteralExp.makeInteger(r-l);
 		return vectorTy(next,len);
 	}
+	
 	private this(Expression next,Expression num)in{
 		assert(next.type.isTypeTy);
 	}body{
 		this.next=next;
 		this.num=num;
-
-		if (Type elementType = cast(Type)this.elementType) {
-			this.manifoldDeclScope = elementType.manifoldDeclScope;
-			this.type = elementType.type;
-		}
+		this.type=isManifoldType?manifoldTypeTy:typeTy;
+		super();
 	}
 	override string toString(){
 		bool p=cast(FunTy)next||next.isTupleTy&&next!is unit;
@@ -945,7 +938,7 @@ FunctionDef makePointWiseMoveOp(Manifold elementMType, Type tangentVecTy, Scope 
 	return funDef;
 }
 
-VectorTy replacingElementType(VectorTy vecTy, Type elementType) {
+VectorTy replacingElementType(VectorTy vecTy, Expression elementType) {
 	if (auto nextVecTy=cast(VectorTy)vecTy.next) {
 		return vectorTy(replacingElementType(nextVecTy, elementType), vecTy.num);
 	} else {
@@ -1604,12 +1597,12 @@ bool isTypeTy(Expression ty) {
 class Manifold: Node {
 	Type elementType;
 	FunctionDef moveOpDef;
-	Type tangentVecTy;
+	Expression tangentVecTy;
 	Expression tangentZeroExp;
 
 	ManifoldDecl manifoldDecl;
  
-	this(Type elementType, FunctionDef moveOpDef, Type tangentVecTy, Expression tangentZeroExp){ 
+	this(Type elementType, FunctionDef moveOpDef, Expression tangentVecTy, Expression tangentZeroExp){ 
 		this.elementType = elementType;
 		this.moveOpDef = moveOpDef;
 		this.tangentVecTy = tangentVecTy;
@@ -1687,15 +1680,19 @@ T unalias(T)(T type) {
 
 class ParameterSetTy : Type {
 	Expression target;
+	Scope sc;
+
 	enum classical=true;
-	private this(Expression target){
+	private this(Expression target, Scope sc){
 		super();
 		
 		this.target = target;
+		this.sc = sc;
+
 		this.type=typeTy;
 	}
 	override ParameterSetTy copyImpl(CopyArgs args){
-		return new ParameterSetTy(target.copy());
+		return new ParameterSetTy(target.copy(), sc);
 	}
 	override string toString(){
 		return "params[" ~ target.toString ~ "]";
@@ -1714,7 +1711,7 @@ class ParameterSetTy : Type {
 		return true;
 	}
 	override Expression evalImpl(Expression ntype){ 
-		return new ParameterSetTy(target.eval()); 
+		return new ParameterSetTy(target.eval(), sc); 
 	}
 	mixin VariableFree;
 	override int componentsImpl(scope int delegate(Expression) dg){
@@ -1725,12 +1722,10 @@ class ParameterSetTy : Type {
 		return this == other;
 	}
 
-	override @property bool isManifoldType() {
-		return true;
-	}
+	override @property bool isManifoldType() { return true; }
 	
 	override Manifold manifoldImpl(Scope sc) {
-		auto tangentVecTy = opaqueTangentVecTy(this);
+		auto tangentVecTy = unresolvedTangentVectorTy(this, sc);
 
 		auto tangentZeroExp = new FieldExp(new ParameterSetHandleExp(target), new Identifier("tangentZero"));
 		tangentZeroExp.type = tangentVecTy;
@@ -1746,90 +1741,6 @@ class ParameterSetTy : Type {
 	}
 }
 
-ParameterSetTy parameterSetTy(Expression target){
-	return memoize!((Expression target)=>new ParameterSetTy(target))(target);
-}
-
-// TODO: Think about a generalisation of this (existential types?)
-class OpaqueTangentVecTy : Type {
-	string name;
-	enum classical=true;
-	Expression elementTy;
-
-	this(Expression elementTy){
-		super();
-		
-		this.elementTy = elementTy;
-		this.type=typeTy;
-	}
-	override OpaqueTangentVecTy copyImpl(CopyArgs args){
-		return new OpaqueTangentVecTy(elementTy.copy());
-	}
-	override string toString(){
-		return "tangentVector[" ~  elementTy.toString ~ "]";
-	}
-	override bool opEquals(Object o){
-		auto otherParamSetTy = cast(OpaqueTangentVecTy)o;
-		if (!otherParamSetTy) {
-			return false;
-		}
-		return otherParamSetTy.elementTy == elementTy;
-	}
-	override bool isClassical(){
-		return classical;
-	}
-	override bool hasClassicalComponent(){
-		return true;
-	}
-	override Expression evalImpl(Expression ntype){
-		if (auto elementType = cast(Type)elementTy.eval()) {
-			if (auto manifoldImpl = elementType.manifold()) {	
-				return manifoldImpl.tangentVecTy;
-			}
-		}
-		return new OpaqueTangentVecTy(elementTy.eval()); 
-	}
-	mixin VariableFree;
-	override int componentsImpl(scope int delegate(Expression) dg){
-		return dg(elementTy);
-	}
-
-	override bool isSubtypeImpl(Expression other) {
-		if (auto otherOpVecTy = cast(OpaqueTangentVecTy)other) {
-			return isSubtype(this.elementTy, otherOpVecTy.elementTy);
-		}
-		if (auto elementTy = cast(Type)this.elementType) {
-			if (elementTy.isManifoldType) {
-				return isSubtype(elementTy.manifold().tangentVecTy, other);
-			}
-		}
-		return super.isSubtypeImpl(other);
-	}
-
-	override Expression combineTypesImpl(Expression r,bool meet){
-		if (auto other = cast(OpaqueTangentVecTy)r) {
-			auto combElementTy = elementTy.combineTypesImpl(other.elementTy, meet);
-			auto res = new OpaqueTangentVecTy(combElementTy);
-			return res;
-		}
-		return null;
-	}
-
-	override bool unifyImpl(Expression rhs,ref Expression[string] subst,bool meet){
-		auto lhs = this.substitute(subst);
-		if (isSubtype(lhs, rhs)) {
-			return true;
-		}
-		return false;
-	}
-
-	override Expression substituteImpl(Expression[string] subst) {
-		auto r = opaqueTangentVecTy(this.elementTy.substitute(subst));
-		r.loc = this.loc;
-		return r.eval();
-	}
-}
-
-OpaqueTangentVecTy opaqueTangentVecTy(Expression elementTy){
-	return memoize!((Expression elementTy)=>new OpaqueTangentVecTy(elementTy))(elementTy);
+ParameterSetTy parameterSetTy(Expression target, Scope sc){
+	return memoize!((Expression target, Scope sc)=>new ParameterSetTy(target, sc))(target, sc);
 }

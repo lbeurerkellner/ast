@@ -4,8 +4,9 @@ module ast.expression;
 
 import std.array, std.algorithm, std.range, std.conv, std.string, std.exception;
 
-import ast.lexer, ast.parser, ast.scope_, ast.type, ast.declaration, util;
+import ast.lexer, ast.parser, ast.scope_, ast.type, ast.declaration, ast.semantic_, util;
 import astopt;
+import std.functional : memoize;
 
 enum SemState{
 	raw, // before presemantic 
@@ -26,16 +27,7 @@ abstract class Node{
 
 
 abstract class Expression: Node{
-	Expression _type;
-
-	@property Expression type() {
-		return _type;
-	}
-
-	@property void type(Expression t) {
-		this._type = t;
-	}
-
+	Expression type;
 	int brackets=0;
 
 	struct CopyArgs{
@@ -1604,4 +1596,120 @@ class ManifoldMoveExp: Expression{
 	override int componentsImpl(scope int delegate(Expression) dg){
 		return dg(target);
 	}
+}
+
+
+// placeholder expression for manifold members of a yet-to-resolved (substituted) type/expression
+class UnresolvedManifoldMemberExp : Expression {
+	string name;
+	enum classical=true;
+	
+	Expression target;
+	string memberName;
+	Scope sc;
+
+	this(Expression target, string memberName, Scope sc){
+		if (memberName == "tangentVector") {
+			this.type=typeTy;
+		} else if (memberName == "tangentZero") {
+			this.type=unresolvedTangentVectorTy(target, sc);
+		} else if (memberName == "move") {
+			this.type=productTy([true], ["along"], unresolvedTangentVectorTy(target, sc), unit, false, false, Annotation.none, true);
+		} else {
+			assert(false, "Invalid manifold member name " ~ memberName);
+		}
+		
+		this.target = target;
+		this.memberName = memberName;
+		this.sc = sc;
+	}
+	override UnresolvedManifoldMemberExp copyImpl(CopyArgs args){
+		return new UnresolvedManifoldMemberExp(target.copy(), memberName, sc);
+	}
+	override string toString(){
+		return target.toString ~ "." ~ memberName;
+	}
+	override bool opEquals(Object o){
+		auto otherManifoldMemberExp = cast(UnresolvedManifoldMemberExp)o;
+		if (!otherManifoldMemberExp) {
+			return false;
+		}
+		return otherManifoldMemberExp.target == target;
+	}
+	override bool isClassical(){
+		return classical;
+	}
+	override bool hasClassicalComponent(){
+		return true;
+	}
+	override Expression evalImpl(Expression ntype){
+		return manifoldMemberSemantic(target.eval(), memberName, sc);
+	}
+	mixin VariableFree;
+	override int componentsImpl(scope int delegate(Expression) dg){
+		return dg(target);
+	}
+
+	override bool isSubtypeImpl(Expression other) {
+		if (auto otherManifoldExp = cast(UnresolvedManifoldMemberExp)other) {
+			auto targetEvaluated = cast(Type)this.target.eval();
+			auto otherTargetEvaluated = cast(Type)otherManifoldExp.target.eval();
+			auto t1 = cast(Type)targetEvaluated;
+			auto t2 = cast(Type)otherTargetEvaluated;
+			if (t1&&t2) { // both targets are direct type references
+				return isSubtype(t1, t2);
+			}
+
+			if (!t1&&t2) { // this.target is value expression, t2 is direct type reference
+				auto t1ValueType = targetEvaluated.type;
+				return isSubtype(t1ValueType, t2);
+			}
+			if (t1&&!t2) { // this.target is direct type, t2 is value expression
+				auto t2ValueType = otherTargetEvaluated.type;
+				return isSubtype(t1, t2ValueType);
+			}
+
+			// both operands are value expressions
+			return targetEvaluated==otherTargetEvaluated;
+		}
+		if (auto target = cast(Type)this.target) {
+			if (target.isManifoldType) {
+				return isSubtype(target.manifold(sc).tangentVecTy, other);
+			}
+		}
+		return super.isSubtypeImpl(other);
+	}
+
+	override Expression combineTypesImpl(Expression r,bool meet){
+		if (auto other = cast(UnresolvedManifoldMemberExp)r) {
+			auto combElementTy = target.combineTypesImpl(other.target, meet);
+			auto res = new UnresolvedManifoldMemberExp(combElementTy, memberName, sc);
+			return res;
+		}
+		return null;
+	}
+
+	override bool unifyImpl(Expression rhs,ref Expression[string] subst,bool meet){
+		auto lhs = this.substitute(subst);
+		if (isSubtype(lhs, rhs)) {
+			return true;
+		}
+		return false;
+	}
+
+	override Expression substituteImpl(Expression[string] subst) {
+		auto r = unresolvedManifoldMember(target.substitute(subst), memberName, sc);
+		r.loc = this.loc;
+		return r.eval();
+	}
+}
+
+
+UnresolvedManifoldMemberExp unresolvedManifoldMember(Expression elementTy, string memberName, Scope sc){
+	if (memberName == "tangentVector") return unresolvedTangentVectorTy(elementTy, sc);
+	return memoize!((Expression elementTy, string memberName, Scope sc)=>new UnresolvedManifoldMemberExp(elementTy, memberName, sc))(elementTy, memberName, sc);
+}
+
+UnresolvedManifoldMemberExp unresolvedTangentVectorTy(Expression elementTy, Scope sc){
+	return memoize!((Expression elementTy, Scope sc)=>new UnresolvedManifoldMemberExp(elementTy, "tangentVector", sc))(elementTy, sc);
 }
