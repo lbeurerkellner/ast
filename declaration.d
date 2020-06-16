@@ -126,6 +126,10 @@ class PointWiseFunctionDef: FunctionDef {
 	}
 }
 
+Identifier pullbackDefName(Identifier primalName) {
+	return new Identifier("pullback " ~ primalName.name);
+}
+
 class FunctionDef: Declaration{
 	Parameter[] params;
 	bool isTuple;
@@ -151,7 +155,7 @@ class FunctionDef: Declaration{
 		assert(isTuple||params.length==1);
 		}body{
 			if (isPullback) {
-				super(new Identifier("pullback " ~ name.name));
+				super(pullbackDefName(name));
 				this.primalName = name;
 			} else {
 				super(name);

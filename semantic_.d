@@ -1869,7 +1869,7 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 			}
 		}else{
 			if(expr&&expr.sstate!=SemState.error){
-				assert(!!expr.type);
+				assert(!!expr.type, format("%s must have a .type", expr));
 				expr.sstate=SemState.completed;
 			}
 		}
@@ -2700,6 +2700,43 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 			return expr;
 		default: break; // TODO
 		}
+	}
+	if(auto pullExp=cast(PullExp)expr){
+		pullExp.target=expressionSemantic(pullExp.target, sc, ConstResult.yes);
+		propErr(pullExp.target, pullExp);
+		pullExp.type=unit;
+
+		// exit if the target has an error marker already
+		if (pullExp.target.sstate != SemState.completed) {
+			return pullExp;
+		}
+
+		if (auto ident = cast(Identifier)pullExp.target) {
+			FunctionDef primal = cast(FunctionDef)sc.lookup(ident,false,true,Lookup.probing);
+			FunctionDef adjoint = cast(FunctionDef)sc.lookup(pullbackDefName(ident),false,true,Lookup.probing);
+
+			if (!primal) { 
+				sc.error("can only call pullback of functions", pullExp.loc);
+				pullExp.sstate = SemState.error;
+				return pullExp;
+			}
+			if (!adjoint) { 
+				sc.error(format("function %s does not have a pullback", primal.name.name), pullExp.loc);
+				pullExp.sstate = SemState.error;
+				return pullExp;
+			}
+
+			// resolve pull expression by a reference to the pullback definition
+			auto resolvedPullExp = pullbackDefName(ident);
+			resolvedPullExp.loc = pullExp.loc;
+			return expressionSemantic(resolvedPullExp, sc, constResult);
+		} else {
+			sc.error(format("unsupported pullback target %s", pullExp.target.toString), pullExp.loc);
+			pullExp.sstate = SemState.error;
+			return pullExp;
+		}
+
+		return pullExp;
 	}
 	if(auto initExp=cast(InitExp)expr){
 		initExp.target=expressionSemantic(initExp.target, sc, ConstResult.yes);

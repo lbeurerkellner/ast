@@ -1527,6 +1527,28 @@ class ParamDefExp: Expression {
 	}
 }
 
+class PullExp: Expression {
+	Expression target;
+	this(Expression target){
+		this.target=target;
+	}
+	override PullExp copyImpl(CopyArgs args){
+		return new PullExp(target.copy(args));
+	}
+	override string toString(){ return _brk("pull "~target.toString()); }
+
+	override string kind() { return "pull"; }
+
+	override Expression evalImpl(Expression ntype){
+		auto targetVal=target.eval();
+		return new PullExp(targetVal);
+	}
+	mixin VariableFree; // TODO
+	override int componentsImpl(scope int delegate(Expression) dg){
+		return dg(target);
+	}
+}
+
 class InitExp: Expression{
 	Expression target;
 	this(Expression target){

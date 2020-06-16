@@ -91,6 +91,11 @@ int getLbp(TokenType type) pure{ // operator precedence
 	case Tok!".",Tok!"++",Tok!"--":
 	case Tok!"(", Tok!"[": // function call and indexing
 		return 160;
+	static if(language==dp) {
+	case Tok!"pull":
+	case Tok!"init":
+		return 161;
+	}
 	//case Tok!"i": return 45; //infix
 	default: return -1;
 	}
@@ -328,14 +333,8 @@ struct Parser{
 	bool skip(){nextToken(); return true;}
 	Identifier parseIdentifier(){ // Identifier(null) is the error value
 		string name;	
-		static if(language==dp) {
-			if (ttype==Tok!"i") name=tok.name;
-			else if (ttype==Tok!"pullback") name="pullback"; // support "pullback" as identifier
-			else { expectErr!"identifier"(); auto e=New!Identifier(string.init); e.loc=tok.loc; return e; }
-		} else {
-			if (ttype==Tok!"i") name=tok.name;
-			else { expectErr!"identifier"(); auto e=New!Identifier(string.init); e.loc=tok.loc; return e; }
-		}
+		if (ttype==Tok!"i") name=tok.name;
+		else { expectErr!"identifier"(); auto e=New!Identifier(string.init); e.loc=tok.loc; return e; }
 		displayExpectErr=true;
 		auto e=New!Identifier(name);
 		e.loc=tok.loc;
@@ -407,7 +406,7 @@ struct Parser{
 		mixin(SetLoc!Expression);
 		Token t; // DMD 2.072.1: hoisted to satisfy buggy deprecation code
 		switch(ttype){
-			case Tok!"i", Tok!"pullback": return parseIdentifier();
+			case Tok!"i": return parseIdentifier();
 			static if (language==dp) { case Tok!"manifold": { auto r=New!Identifier("manifold"); r.loc=tok.loc; nextToken(); return r; } }
 			case Tok!"*": auto r=New!Identifier("*"); r.loc=tok.loc; nextToken(); return r;
 			case Tok!"?": nextToken(); return res=New!PlaceholderExp(parseIdentifier());
@@ -511,6 +510,14 @@ struct Parser{
 				case Tok!"const":
 					nextToken();
 					return res=New!(UnaryExp!(Tok!"const"))(parseExpression(nbp));
+			}
+			static if(language==dp){
+				case Tok!"pull":
+					expect(Tok!"pull");
+					return res=New!PullExp(parseExpression(lbp!(Tok!"pull")));
+				case Tok!"init":
+					expect(Tok!"init");
+					return res=New!InitExp(parseExpression(lbp!(Tok!"pull")));
 			}
 			case Tok!"__error": mixin(rule!(ErrorExp,"_"));
 			//case Tok!"[": mixin(rule!(ArrayLiteralExp,"_","OPT",ArgumentList,"]"));
@@ -709,7 +716,6 @@ struct Parser{
 				else break;
 			}
 			static if (language==dp) case Tok!"param": return parseParam();
-			static if (language==dp) case Tok!"init": return parseInit();
 			default: break;
 		}
 		Expression left;
@@ -1057,12 +1063,6 @@ struct Parser{
 			error("expected variable declaration (:=)",loc);
 			return null;
 		}
-	}
-	static if(language==dp) InitExp parseInit(){
-		mixin(SetLoc!InitExp);
-		expect(Tok!"init");
-		auto target = parseExpression();
-		return res=New!InitExp(target);
 	}
 	static if(language==dp) bool aheadLooksLikeManifoldDecl() {
 		return ttype==Tok!"manifold" && peek.type==Tok!"i";
