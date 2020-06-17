@@ -450,9 +450,18 @@ class PlaceholderExp: Expression{
 	override int componentsImpl(scope int delegate(Expression) dg){ return 0; }
 }
 
-
-class UnaryExp(TokenType op): Expression{
+abstract class AUnaryExp: Expression {
 	Expression e;
+
+	// string representation of unary operator
+	abstract @property string opRep();
+}
+
+class UnaryExp(TokenType op): AUnaryExp{
+	override @property string opRep() {
+		return TokChars!op;
+	}
+	
 	this(Expression next){e = next;}
 	override UnaryExp!op copyImpl(CopyArgs args){
 		return new UnaryExp!op(e.copy(args));
@@ -856,6 +865,9 @@ abstract class ABinaryExp: Expression{
 	override @property string kind() {
 		return "ABinaryExp";
 	}
+	
+	/// string representation of binary operator
+	abstract @property string opRep();
 }
 
 class BinaryExp(TokenType op): ABinaryExp{
@@ -873,6 +885,10 @@ class BinaryExp(TokenType op): ABinaryExp{
 		override BinaryExp!op copyImpl(CopyArgs args){
 			return new BinaryExp!op(e1.copy(args),e2.copy(args));
 		}
+	}
+
+	override @property string opRep() {
+		return TokChars!op;
 	}
 
 	override string toString(){
