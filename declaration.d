@@ -141,7 +141,9 @@ class FunctionDef: Declaration{
 	static if (language==dp) {
 		bool isParameterized = true;
 		bool isPullback = false;
-		
+		bool isManifoldOp = false;
+		bool isDifferentiable = true;
+
 		Identifier primalName=null;
 		FunctionDef primal=null;
 		FunctionDef adjoint=null;

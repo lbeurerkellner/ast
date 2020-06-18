@@ -809,6 +809,13 @@ struct Parser{
 			}
 			if(isLifted) foreach(p;cast(Parameter[])params[0]) p.isConst=true;
 		}
+		static if(language==dp){
+			bool isNonDiff=false;
+			if(ttype==Tok!"nondiff"){
+				nextToken();
+				isNonDiff=true;
+			}
+		}
 		Expression ret=null;
 		if(ttype==Tok!":"){
 			nextToken();
@@ -843,6 +850,8 @@ struct Parser{
 		
 		res.isSquare=isSquare;
 		res.annotation=annotation;
+		static if(language==dp) res.isDifferentiable=!isNonDiff;
+
 		return res;
 	}
 	DatParameter parseDatParameter(){

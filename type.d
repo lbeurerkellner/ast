@@ -1037,8 +1037,10 @@ StringTy stringTy(bool classical=true){
 enum Annotation{
 	none,
 	mfree,
-	qfree,
+	qfree
 }
+
+
 static if(language==silq) enum deterministic=Annotation.qfree;
 static if(language==psi) enum deterministic=Annotation.none;
 static if(language==dp) enum deterministic=Annotation.none;
@@ -1046,7 +1048,7 @@ static if(language==dp) enum deterministic=Annotation.none;
 string annotationToString(Annotation annotation){
 	static if(language==silq) return annotation?text(annotation):"";
 	static if(language==psi) return "";
-	static if(language==dp) return "";
+	static if(language==dp) return annotation?text(annotation):"";
 }
 
 class RawProductTy: Expression{

@@ -6,6 +6,7 @@ import astopt;
 import std.array,std.algorithm,std.range,std.exception;
 import std.format, std.conv, std.typecons:Q=Tuple,q=tuple;
 import ast.lexer,ast.scope_,ast.expression,ast.type,ast.declaration,ast.error,ast.reverse,util;
+import ast.ad;
 
 alias CommaExp=BinaryExp!(Tok!",");
 alias AssignExp=BinaryExp!(Tok!"←");
@@ -2720,7 +2721,7 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 				pullExp.sstate = SemState.error;
 				return pullExp;
 			}
-			if (!adjoint) { 
+			if (!adjoint) {
 				sc.error(format("function %s does not have a pullback", primal.name.name), pullExp.loc);
 				pullExp.sstate = SemState.error;
 				return pullExp;
@@ -2835,8 +2836,6 @@ static if (language==dp) Expression manifoldMemberSemantic(Expression target, st
 			if (auto ident = cast(Identifier)target) {
 				if ((cast(ManifoldTypeTy)targetType) !is null) {
 					return unresolvedManifoldMember(target, memberName, sc);
-				} else {
-					return null;
 				}
 			}
 
@@ -3000,6 +2999,17 @@ FunctionDef functionDefSemantic(FunctionDef fd,Scope sc){
 	static if(language==dp) {
 		if (fd.isPullback) {
 			fd=pullbackSemantic(fd, sc);
+		} else {
+			if (fd.name) {
+				assert(fd.name, format("Cannot lookup pullback of function without name: %s", fd.toString));
+				FunctionDef adjoint = cast(FunctionDef)sc.lookup(pullbackDefName(fd.name),false,true,Lookup.probing);
+				if (!adjoint) {
+					adjoint=generatePullback(fd, sc);
+					fd.adjoint = adjoint;
+				}
+			} else {
+				// writeln(format("Skipping pullback generation for function without name: %s", fd.toString));
+			}
 		}
 	}
 
@@ -3178,7 +3188,8 @@ static if (language==dp) ManifoldDecl manifoldDeclSemantic(ManifoldDecl maniDecl
 
 static if (language==dp) FunctionDef manifoldMoveOpSemantic(FunctionDef moveOpDef, Type elementType, Type tangentVecTy, Scope sc) {
 	auto moveOpTy = productTy([true], ["along"], tangentVecTy, unit, false, false, Annotation.none, true);
-		
+	
+	moveOpDef.isManifoldOp = true;
 	moveOpDef.thisVar = addVar("this",elementType,moveOpDef.loc,moveOpDef.body_.blscope_); // add 'this' var
 	moveOpDef = functionDefSemantic(moveOpDef, sc);
 
