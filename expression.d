@@ -1521,7 +1521,7 @@ class ParamDefExp: Expression {
 		this.context = context;
 	}
 	override ParamDefExp copyImpl(CopyArgs args){
-		return new ParamDefExp(defineExp.copy(args), context.copy(args));
+		return new ParamDefExp(defineExp.copy(args), context?context.copy(args):null);
 	}
 	override string toString(){ 
 		return _brk("param "~defineExp.toString()); 

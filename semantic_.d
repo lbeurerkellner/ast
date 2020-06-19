@@ -3055,34 +3055,11 @@ static if(language==dp) FunctionDef pullbackSemantic(FunctionDef fd, Scope sc) {
 		return fd;
 	}
 
-	// prepends the given type 'first' to a ProductTy domain as given by 'dom'
-	Expression prependingToDomain(Expression first, Expression dom) {
-		if (TupleTy tup = cast(TupleTy)dom) {
-			return tupleTy([first] ~ tup.types);
-		}
-		if (VectorTy vec = cast(VectorTy)dom) {
-			if (LiteralExp vecSize = cast(LiteralExp)vec.num) {
-				auto intVal = to!int(vecSize.lit.str);
-				if(intVal > 0 && vecSize.lit.type==Tok!"0") {
-					return tupleTy([first] ~ repeat(vec.next, intVal).array);
-				}
-			}
-		}
-		return tupleTy([first, dom]);
-	}
-
+	auto pty = pullbackTy(primal, manifoldDom, manifoldCod);
 	// check pullback signature
-	auto pullbackParamNames = ["v"] ~ primal.params.map!(p => p.name.name).array;
-	auto pullbackParamTypes = prependingToDomain(manifoldDom.tangentVecTy, primal.ftype.dom);
-	auto pullbackReturnType = manifoldCod.tangentVecTy;
-	auto isConst = [true] ~ primal.ftype.isConst;
-
-	auto pullbackTy = productTy(isConst, pullbackParamNames, pullbackParamTypes, pullbackReturnType, 
-		false, true, Annotation.none, true);
-	
-	if (!isSubtype(pullbackTy, fd.ftype)) {
+	if (!isSubtype(pty, fd.ftype)) {
 		sc.error(format("pullback for function %s requires signature %s not %s.", 
-			fd.primalName.toString, pullbackTy.toString, fd.ftype.toString), fd.loc);	
+			fd.primalName.toString, pty.toString, fd.ftype.toString), fd.loc);	
 		fd.sstate=SemState.error;
 		return fd;
 	}
