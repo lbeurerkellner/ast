@@ -3047,6 +3047,12 @@ static if(language==dp) FunctionDef pullbackSemantic(FunctionDef fd, Scope sc) {
 		return fd;
 	}
 
+	if (!primal.isDifferentiable) {
+		sc.error(format("cannot define pullback for nondiff-annotated function %s.", 
+			fd.primalName.toString), fd.loc);	
+		return fd;
+	}
+
 	// establish linking of functions
 	fd.primal = functionDefSemantic(primal, sc);
 	primal.adjoint = fd;
@@ -3074,6 +3080,11 @@ static if(language==dp) FunctionDef pullbackSemantic(FunctionDef fd, Scope sc) {
 	}
 
 	auto pty = pullbackTy(primal, sc);
+	if (!pty) {
+		sc.error(format("failed to determine pullback signature for function %s with signature %s.", 
+			fd.primalName.toString, fd.ftype.toString), fd.loc);	
+		return fd;
+	}
 	// check pullback signature
 	if (!isSubtype(pty, fd.ftype)) {
 		sc.error(format("pullback for function %s requires signature %s not %s.", 
