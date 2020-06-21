@@ -6,7 +6,6 @@ import astopt;
 import std.array,std.algorithm,std.range,std.exception;
 import std.format, std.conv, std.typecons:Q=Tuple,q=tuple;
 import ast.lexer,ast.scope_,ast.expression,ast.type,ast.declaration,ast.error,ast.reverse,util;
-import ast.ad;
 
 alias CommaExp=BinaryExp!(Tok!",");
 alias AssignExp=BinaryExp!(Tok!"←");
@@ -837,7 +836,7 @@ Expression statementSemantic(Expression e,Scope sc)in{
 		}
 	}
 
-	sc.error("not supported at this location",e.loc);
+	sc.error(format("not supported at this location: %s", e.toString),e.loc);
 	e.sstate=SemState.error;
 	return e;
 }
@@ -1074,6 +1073,7 @@ Identifier getIdFromIndex(IndexExp e){
 
 static if(language==silq){
 Expression indexReplaceSemantic(IndexExp theIndex,ref Expression rhs,Location loc,Scope sc){
+	writeln("indexReplaceSemantic ", theIndex);
 	void consumeArray(IndexExp e){
 		if(auto idx=cast(IndexExp)e.e) return consumeArray(idx);
 		e.e=expressionSemantic(e.e,sc,ConstResult.no); // consume array
@@ -1744,6 +1744,7 @@ Expression broadcastedType(VectorTy vecLhs, VectorTy vecRhs) {
 }
 
 Expression arithmeticType(bool preserveBool)(Expression t1, Expression t2){
+	t1=unalias(t1); t2=unalias(t2);
 	if(isInt(t1) && isSubtype(t2,ℤt(t1.isClassical()))) return t1; // TODO: automatic promotion to quantum
 	if(isInt(t2) && isSubtype(t1,ℤt(t2.isClassical()))) return t2;
 	if(isUint(t1) && isSubtype(t2,ℤt(t1.isClassical()))) return t1;
@@ -1818,6 +1819,7 @@ Expression cmpType(Expression t1,Expression t2){
 		if(!(joinTypes(t1,t2)||isNumeric(t1)||isNumeric(t2)))
 			return null;
 	}else{
+		t1=unalias(t1); t2=unalias(t2);
 		auto a1=cast(ArrayTy)t1,a2=cast(ArrayTy)t2;
 		auto v1=cast(VectorTy)t1,v2=cast(VectorTy)t2;
 		Expression n1=a1?a1.next:v1?v1.next:null,n2=a2?a2.next:v2?v2.next:null;
@@ -2156,13 +2158,14 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 				}
 			}
 		}
-		if(auto at=cast(ArrayTy)idx.e.type){
+		Expression indexedTyped = unalias(idx.e.type);
+		if(auto at=cast(ArrayTy)indexedTyped){
 			check(at.next);
-		}else if(auto vt=cast(VectorTy)idx.e.type){
+		}else if(auto vt=cast(VectorTy)indexedTyped){
 			check(vt.next);
-		}else if(isInt(idx.e.type)||isUint(idx.e.type)){
-			check(Bool(idx.e.type.isClassical()));
-		}else if(auto tt=cast(TupleTy)idx.e.type){
+		}else if(isInt(indexedTyped)||isUint(indexedTyped)){
+			check(Bool(indexedTyped.isClassical()));
+		}else if(auto tt=cast(TupleTy)indexedTyped){
 			if(idx.a.length!=1){
 				sc.error(format("only one index required to index type %s",tt),idx.loc);
 				idx.sstate=SemState.error;
@@ -2182,7 +2185,7 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 				}
 			}
 		}else{
-			sc.error(format("type %s is not indexable",idx.e.type),idx.loc);
+			sc.error(format("type %s is not indexable",indexedTyped),idx.loc);
 			idx.sstate=SemState.error;
 		}
 		if(replaceIndex){
@@ -2464,7 +2467,7 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 		if(processedE1.type.isTypeTy&&name=="power"){
 			if (auto vt = tensorTypeSemantic(processedE1, e2, sc)) {
 				propErr(vt,e);
-				e.type = vt;
+				e.type = typeTy;
 				return vt;
 			} else {
 				e.sstate=SemState.error;
@@ -2702,10 +2705,30 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 		default: break; // TODO
 		}
 	}
+	if(auto binaryPullbackCallExp=cast(BinaryPullbackCallExp)expr){
+		binaryPullbackCallExp.v = expressionSemantic(binaryPullbackCallExp.v, sc, ConstResult.no);
+		binaryPullbackCallExp.e1 = expressionSemantic(binaryPullbackCallExp.e1, sc, ConstResult.no);
+		binaryPullbackCallExp.e2 = expressionSemantic(binaryPullbackCallExp.e2, sc, ConstResult.no);
+		
+		binaryPullbackCallExp.type = binaryPullbackTy(binaryPullbackCallExp, sc);
+		if (!binaryPullbackCallExp.type) {
+			sc.error("failed to type pullback expression", binaryPullbackCallExp.loc);
+			binaryPullbackCallExp.type = unit;
+		}
+		
+		if (binaryPullbackCallExp.e1.sstate != SemState.completed ||
+			binaryPullbackCallExp.e2.sstate != SemState.completed || 
+			binaryPullbackCallExp.v.sstate != SemState.completed) {
+			
+			binaryPullbackCallExp.sstate = SemState.error;
+			return binaryPullbackCallExp;
+		}
+
+		return binaryPullbackCallExp;
+	}
 	if(auto pullExp=cast(PullExp)expr){
 		pullExp.target=expressionSemantic(pullExp.target, sc, ConstResult.yes);
 		propErr(pullExp.target, pullExp);
-		pullExp.type=unit;
 
 		// exit if the target has an error marker already
 		if (pullExp.target.sstate != SemState.completed) {
@@ -2715,29 +2738,35 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 		if (auto ident = cast(Identifier)pullExp.target) {
 			FunctionDef primal = cast(FunctionDef)sc.lookup(ident,false,true,Lookup.probing);
 			FunctionDef adjoint = cast(FunctionDef)sc.lookup(pullbackDefName(ident),false,true,Lookup.probing);
+			pullExp.type = pullbackTy(primal, sc);
 
 			if (!primal) { 
 				sc.error("can only call pullback of functions", pullExp.loc);
 				pullExp.sstate = SemState.error;
 				return pullExp;
 			}
-			if (!adjoint) {
+
+			if (pullExp.type is null) {
 				sc.error(format("function %s does not have a pullback", primal.name.name), pullExp.loc);
 				pullExp.sstate = SemState.error;
 				return pullExp;
 			}
 
-			// resolve pull expression by a reference to the pullback definition
-			auto resolvedPullExp = pullbackDefName(ident);
-			resolvedPullExp.loc = pullExp.loc;
-			return expressionSemantic(resolvedPullExp, sc, constResult);
+			// if adjoint is already known at this time (explicitly defined by user),
+			// establish linking
+			primal.adjoint = adjoint;
 		} else {
-			sc.error(format("unsupported pullback target %s", pullExp.target.toString), pullExp.loc);
-			pullExp.sstate = SemState.error;
-			return pullExp;
+			sc.error("could not type pullback", pullExp.loc);
+			pullExp.type=unit;
 		}
 
 		return pullExp;
+	}
+	if(auto untapeExp=cast(UntapeExp)expr){
+		return untapeExp;
+	}
+	if(auto tapeExp=cast(TapeExp)expr){
+		return tapeExp;
 	}
 	if(auto initExp=cast(InitExp)expr){
 		initExp.target=expressionSemantic(initExp.target, sc, ConstResult.yes);
@@ -2999,17 +3028,6 @@ FunctionDef functionDefSemantic(FunctionDef fd,Scope sc){
 	static if(language==dp) {
 		if (fd.isPullback) {
 			fd=pullbackSemantic(fd, sc);
-		} else {
-			if (fd.name) {
-				assert(fd.name, format("Cannot lookup pullback of function without name: %s", fd.toString));
-				FunctionDef adjoint = cast(FunctionDef)sc.lookup(pullbackDefName(fd.name),false,true,Lookup.probing);
-				if (!adjoint) {
-					adjoint=generatePullback(fd, sc);
-					fd.adjoint = adjoint;
-				}
-			} else {
-				// writeln(format("Skipping pullback generation for function without name: %s", fd.toString));
-			}
 		}
 	}
 
@@ -3055,7 +3073,7 @@ static if(language==dp) FunctionDef pullbackSemantic(FunctionDef fd, Scope sc) {
 		return fd;
 	}
 
-	auto pty = pullbackTy(primal, manifoldDom, manifoldCod);
+	auto pty = pullbackTy(primal, sc);
 	// check pullback signature
 	if (!isSubtype(pty, fd.ftype)) {
 		sc.error(format("pullback for function %s requires signature %s not %s.", 
@@ -3663,4 +3681,102 @@ Expression handleQuery(CallExp ce,Scope sc){
 	return ce;
 }
 
+}
+
+
+// prepends the given type 'first' to a ProductTy domain as given by 'dom'
+static if(language==dp) private Expression prependingToDomain(Expression first, Expression dom) {
+    if (TupleTy tup = cast(TupleTy)dom) {
+        return tupleTy([first] ~ tup.types);
+    }
+    if (VectorTy vec = cast(VectorTy)dom) {
+        if (LiteralExp vecSize = cast(LiteralExp)vec.num) {
+            auto intVal = to!int(vecSize.lit.str);
+            if(intVal > 0 && vecSize.lit.type==Tok!"0") {
+                return tupleTy([first] ~ repeat(vec.next, intVal).array);
+            }
+        }
+    }
+    return tupleTy([first, dom]);
+}
+
+static if(language==dp) ProductTy pullbackTy(FunctionDef fd, Scope sc) {
+	// skip built-in functions
+    if (fd.body_ is null) {
+        return null;
+    }
+
+    // temporary: skip functions of dependent type
+    if (fd.isSquare) {
+        //writeln(format("Skipping pullback generation for dependent function: %s", fd.toString));
+        return null;
+    }
+
+    // skip manifold member operations
+    if (fd.isManifoldOp) {
+        //writeln(format("Skipping pullback generation for manifold member: %s", fd.name.toString));
+        return null;
+    }
+
+    // skip dat constructors
+    if (fd.isConstructor) {
+        //writeln(format("Skipping pullback generation for constructor: %s", fd.name.toString));
+        return null;
+    }
+
+    // skip pullback functions
+    if (fd.isPullback) {
+        return null;
+    }
+
+	// no pullbacks for nondiff-annotated functions
+    if (!fd.isDifferentiable) {
+        return null;
+    }
+	
+	ProductTy ftype = fd.ftype;
+	Type dom = cast(Type)ftype.cod;
+	Type cod = cast(Type)ftype.dom;
+
+	// no pullbacks for functions w/o arguments or w/o return types 
+	if (dom==unit||cod==unit) {
+		return  null;
+	}
+
+	auto manifoldDom = dom.manifold(sc);
+	auto manifoldCod = cod.manifold(sc);
+
+	if (!manifoldDom||!manifoldCod) {
+		sc.error(format("failed to determine pullback signature for function %s with" ~ 
+			" non-differentiable parameter or return types.", fd.name.name), fd.loc);
+		return null;
+	}
+	
+	auto pullbackParamNames = ["v"] ~ fd.params.map!(p => p.name.name).array;
+	auto pullbackParamTypes = prependingToDomain(manifoldDom.tangentVecTy, ftype.dom);
+	auto pullbackReturnType = manifoldCod.tangentVecTy;
+	auto isConst = [true] ~ ftype.isConst;
+
+	return productTy(isConst, pullbackParamNames, pullbackParamTypes, pullbackReturnType, 
+		false, true, Annotation.none, true);
+}
+static if(language==dp) Expression binaryPullbackTy(BinaryPullbackCallExp binaryPullbackCallExp, Scope sc) {
+	auto domT1 = cast(Type)binaryPullbackCallExp.e1.type;
+	auto domT2 = cast(Type)binaryPullbackCallExp.e2.type;
+	// domain of the original operator
+	Type dom = tupleTy([domT1, domT2]);
+
+	// no pullbacks for operations w/o arguments or w/o return types 
+	if (dom==unit) {
+		return  null;
+	}
+
+	auto manifoldDom = dom.manifold(sc);
+	if (!manifoldDom) {
+		sc.error(format("failed to determine pullback type for binary operation %s with" ~ 
+			" non-differentiable operands type %s.", binaryPullbackCallExp.op, dom.toString), binaryPullbackCallExp.loc);
+		return null;
+	}
+	
+	return manifoldDom.tangentVecTy;
 }

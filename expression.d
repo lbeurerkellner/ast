@@ -1543,6 +1543,43 @@ class ParamDefExp: Expression {
 	}
 }
 
+class BinaryPullbackCallExp: Expression {
+	Expression v;
+	Expression e1;
+	Expression e2;
+
+	string op;
+
+	this(string op, Expression v, Expression e1, Expression e2) {
+		this.op = op;
+		this.v = v;
+		this.e1 = e1;
+		this.e2 = e2;
+	}
+
+	override string toString() {
+		return "pull " ~ op ~ "(" ~ [v, e1, e2].map!((Expression e){
+			return e !is null ? e.toString : "null";
+		}).join(", ") ~ ")";
+	}
+
+	override Expression copyImpl(CopyArgs args) {
+		return new BinaryPullbackCallExp(op, v.copy(), e1.copy(), e2.copy());
+	}
+	override Expression evalImpl(Expression ntype) {
+		return new BinaryPullbackCallExp(op, v.eval(), e1.eval(), e2.eval());
+	}
+	override string kind() { return "pull binary expression"; }
+
+	mixin VariableFree; // TODO
+	override int componentsImpl(scope int delegate(Expression) dg){
+		foreach(e; [v, e1, e2]) {
+			if (auto res = dg(e)) return res;
+		}
+		return 0;
+	}
+}
+
 class PullExp: Expression {
 	Expression target;
 	this(Expression target){
@@ -1712,7 +1749,9 @@ class UnresolvedManifoldMemberExp : Expression {
 		}
 		if (auto target = cast(Type)this.target) {
 			if (target.isManifoldType) {
-				return isSubtype(target.manifold(sc).tangentVecTy, other);
+				auto targetTangVecTy = target.manifold(sc).tangentVecTy;
+				if (targetTangVecTy==this) return super.isSubtypeImpl(other);
+				return isSubtype(targetTangVecTy, other);
 			}
 		}
 		return super.isSubtypeImpl(other);
@@ -1750,4 +1789,51 @@ UnresolvedManifoldMemberExp unresolvedManifoldMember(Expression elementTy, strin
 
 UnresolvedManifoldMemberExp unresolvedTangentVectorTy(Expression elementTy, Scope sc){
 	return memoize!((Expression elementTy, Scope sc)=>new UnresolvedManifoldMemberExp(elementTy, "tangentVector", sc))(elementTy, sc);
+}
+
+
+class TapeExp: Expression{
+	Expression e;
+    Identifier name;
+
+	this(Identifier name, Expression e){
+        this.name=name;
+		this.e=e;
+	}
+	override TapeExp copyImpl(CopyArgs args){
+		return new TapeExp(name.copy(args), e.copy(args));
+	}
+	override string toString(){ return _brk("tape "~e.toString()~" as "~name.toString); }
+
+	override string kind() { return "tape"; }
+
+	override Expression evalImpl(Expression ntype){
+		return new TapeExp(name, e.eval());
+	}
+	mixin VariableFree; // TODO
+	override int componentsImpl(scope int delegate(Expression) dg){
+		return 0;
+	}
+}
+
+class UntapeExp: Expression{
+	Identifier name;
+
+	this(Identifier name){
+        this.name = name;
+	}
+	override UntapeExp copyImpl(CopyArgs args){
+		return new UntapeExp(name.copy(args));
+	}
+	override string toString(){ return _brk("untape "~name.toString()); }
+
+	override string kind() { return "untape"; }
+
+	override Expression evalImpl(Expression ntype){
+		return new UntapeExp(name);
+	}
+	mixin VariableFree; // TODO
+	override int componentsImpl(scope int delegate(Expression) dg){
+        return dg(name);
+	}
 }

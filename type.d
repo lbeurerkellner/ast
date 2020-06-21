@@ -1667,6 +1667,10 @@ class AliasTy : Type {
 	override bool isSubtypeImpl(Expression other) {
 		return target.isSubtypeImpl(other);
 	}
+
+	override Expression combineTypesImpl(Expression r,bool meet){
+		return target.combineTypesImpl(r, meet);
+	}
 }
 
 AliasTy aliasTy(string name, Type target){
