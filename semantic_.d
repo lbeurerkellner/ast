@@ -1755,6 +1755,10 @@ Expression arithmeticType(bool preserveBool)(Expression t1, Expression t2){
 	if (cast(VectorTy)t1&&cast(VectorTy)t2) {
 		return broadcastedType(cast(VectorTy)t1, cast(VectorTy)t2);
 	}
+	// TODO: can we avoid this check here (maybe do an eval at the beginning)
+	if (cast(TangentVectorTy)t1||cast(TangentVectorTy)t2) {
+		return joinTypes(t1,t2);
+	}
 	if(!(isNumeric(t1)&&isNumeric(t2))) return null;
 	auto r=joinTypes(t1,t2);
 	static if(!preserveBool){
@@ -1819,7 +1823,7 @@ Expression cmpType(Expression t1,Expression t2){
 		if(!(joinTypes(t1,t2)||isNumeric(t1)||isNumeric(t2)))
 			return null;
 	}else{
-		t1=unalias(t1); t2=unalias(t2);
+		t1=unalias(t1.eval()); t2=unalias(t2.eval());
 		auto a1=cast(ArrayTy)t1,a2=cast(ArrayTy)t2;
 		auto v1=cast(VectorTy)t1,v2=cast(VectorTy)t2;
 		Expression n1=a1?a1.next:v1?v1.next:null,n2=a2?a2.next:v2?v2.next:null;
@@ -2890,7 +2894,7 @@ static if (language==dp) Expression manifoldMemberSemantic(Expression target, st
 				return moveExp;
 			}
 			if (memberName == "tangentVector") {
-				return manifoldImpl.tangentVecTy;
+				return tangentVectorTy(target, sc);
 			} else if (memberName == "tangentZero") {
 				return manifoldImpl.tangentZeroExp;
 			}
@@ -2904,7 +2908,7 @@ static if (language==dp) Expression manifoldMemberSemantic(Expression target, st
 		}
 	}
 
-	// special case: parameterised AggrTy as manifolds
+	// special case: AggrTy as manifolds
 	if (auto aggrTy=isDataTyId(target.type)) {
 		if (aggrTy.isParameterized) {
 			// TODO: think about whether this can be done in AggregateTy
@@ -3039,7 +3043,7 @@ FunctionDef functionDefSemantic(FunctionDef fd,Scope sc){
 static if(language==dp) FunctionDef pullbackSemantic(FunctionDef fd, Scope sc) {
 	assert(fd.isPullback);
 	assert(fd.primalName !is null);
-	
+
 	FunctionDef primal = cast(FunctionDef)sc.lookup(fd.primalName,false,false,Lookup.probing);
 	if (!primal) {
 		sc.error(format("failed to resolve primal function %s", fd.primalName.toString), fd.name.loc);
@@ -3079,14 +3083,16 @@ static if(language==dp) FunctionDef pullbackSemantic(FunctionDef fd, Scope sc) {
 		return fd;
 	}
 
-	auto pty = pullbackTy(primal, sc);
+	ProductTy pty = pullbackTy(primal, sc);
 	if (!pty) {
 		sc.error(format("failed to determine pullback signature for function %s with signature %s.", 
 			fd.primalName.toString, fd.ftype.toString), fd.loc);	
 		return fd;
 	}
+	ProductTy fty = fd.ftype;
+
 	// check pullback signature
-	if (!isSubtype(pty, fd.ftype)) {
+	if (!isSubtype(fty, pty) || !isSubtype(pty, fty)) {
 		sc.error(format("pullback for function %s requires signature %s not %s.", 
 			fd.primalName.toString, pty.toString, fd.ftype.toString), fd.loc);	
 		fd.sstate=SemState.error;
@@ -3711,43 +3717,49 @@ static if(language==dp) private Expression prependingToDomain(Expression first, 
     return tupleTy([first, dom]);
 }
 
-static if(language==dp) ProductTy pullbackTy(FunctionDef fd, Scope sc) {
+static if(language==dp) ProductTy pullbackTy(FunctionDef primalFd, Scope sc) {
 	// skip built-in functions
-    if (fd.body_ is null) {
+    if (primalFd.body_ is null) {
         return null;
     }
 
     // temporary: skip functions of dependent type
-    if (fd.isSquare) {
-        //writeln(format("Skipping pullback generation for dependent function: %s", fd.toString));
+    if (primalFd.isSquare) {
+        //writeln(format("Skipping pullback generation for dependent function: %s", primalFd.toString));
         return null;
     }
 
     // skip manifold member operations
-    if (fd.isManifoldOp) {
-        //writeln(format("Skipping pullback generation for manifold member: %s", fd.name.toString));
+    if (primalFd.isManifoldOp) {
+        //writeln(format("Skipping pullback generation for manifold member: %s", primalFd.name.toString));
         return null;
     }
 
     // skip dat constructors
-    if (fd.isConstructor) {
-        //writeln(format("Skipping pullback generation for constructor: %s", fd.name.toString));
+    if (primalFd.isConstructor) {
+        //writeln(format("Skipping pullback generation for constructor: %s", primalFd.name.toString));
         return null;
     }
 
     // skip pullback functions
-    if (fd.isPullback) {
+    if (primalFd.isPullback) {
         return null;
     }
 
 	// no pullbacks for nondiff-annotated functions
-    if (!fd.isDifferentiable) {
+    if (!primalFd.isDifferentiable) {
         return null;
     }
 	
-	ProductTy ftype = fd.ftype;
-	Type dom = cast(Type)ftype.cod;
-	Type cod = cast(Type)ftype.dom;
+	ProductTy ftype = primalFd.ftype;
+	// switch around dom/cod since the pullback goes the other way round
+	Type dom = typeOrDataType(ftype.cod);
+	Type cod = typeOrDataType(ftype.dom);
+
+	// malformed ftype
+	if (dom is null || cod is null) {
+		return null;
+	}
 
 	// no pullbacks for functions w/o arguments or w/o return types 
 	if (dom==unit||cod==unit) {
@@ -3757,19 +3769,41 @@ static if(language==dp) ProductTy pullbackTy(FunctionDef fd, Scope sc) {
 	auto manifoldDom = dom.manifold(sc);
 	auto manifoldCod = cod.manifold(sc);
 
-	if (!manifoldDom||!manifoldCod) {
+	if (manifoldDom is null) {
 		sc.error(format("failed to determine pullback signature for function %s with" ~ 
-			" non-differentiable parameter or return types.", fd.name.name), fd.loc);
+			" non-differentiable return type %s.", primalFd.name.name, dom.toString), primalFd.loc);
+		return null;
+	}
+	if (manifoldCod is null) {
+		sc.error(format("failed to determine pullback signature for function %s with" ~ 
+			" non-differentiable parameter type %s.", primalFd.name.name, cod.toString), primalFd.loc);
 		return null;
 	}
 	
-	auto pullbackParamNames = ["v"] ~ fd.params.map!(p => p.name.name).array;
-	auto pullbackParamTypes = prependingToDomain(manifoldDom.tangentVecTy, ftype.dom);
-	auto pullbackReturnType = manifoldCod.tangentVecTy;
-	auto isConst = [true] ~ ftype.isConst;
+	auto pullbackSquareParamNames = primalFd.params.map!(p => p.name.name).array;
+	auto pullbackSquareDom = ftype.dom;
+	const bool squareDomIsTuple = pullbackSquareParamNames.length > 1;
+	
+	auto pullbackParamNames = ["v"];
+	auto pullbackDom = manifoldDom.tangentVecTy;
 
-	return productTy(isConst, pullbackParamNames, pullbackParamTypes, pullbackReturnType, 
-		false, true, Annotation.none, true);
+	Expression pullbackCod;
+	Expression[] pullbackCodComponents;
+	foreach(idx, param; pullbackSquareParamNames) {
+			auto id = new Identifier(param);
+			id.type = ftype.argTy(idx);
+			id.meaning = primalFd.params[idx];
+			pullbackCodComponents ~= [tangentVectorTy(id, sc)];
+	}
+	if (pullbackCodComponents.length == 1) {
+		pullbackCod = pullbackCodComponents[0];
+	} else {
+		pullbackCod = tupleTy(pullbackCodComponents);
+	}
+	
+	auto pullbackOpTy = productTy([true], pullbackParamNames, pullbackDom, pullbackCod, false, false, Annotation.none, true);
+	return productTy(ftype.isConst, pullbackSquareParamNames, pullbackSquareDom, pullbackOpTy, 
+		true, squareDomIsTuple, Annotation.none, true);
 }
 static if(language==dp) Expression binaryPullbackTy(BinaryPullbackCallExp binaryPullbackCallExp, Scope sc) {
 	auto domT1 = cast(Type)binaryPullbackCallExp.e1.type;

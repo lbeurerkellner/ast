@@ -72,13 +72,17 @@ abstract class Expression: Node{
 	}
 	final Expression substitute(Expression[string] subst){
 		auto r=substituteImpl(subst);
+		assert(r !is null, text("substitute on ", this, " returned null ", typeid(this)));
 		if(type){
 			if(type == this) r.type=r;
 			else {
 				auto substType = type.substitute(subst);
 				if (r.type is null) r.type=substType;
 				// subtype check allows refinement of type by substitution
-				else assert(isSubtype(r.type, substType),text("Expected substituted type ", substType, " but got ", r.type));
+				else {
+					assert(isSubtype(r.type, substType) || cast(Identifier)substType,
+						text("Expected substituted type ", substType, " but got ", r.type, " for ", this));
+				}
 			}
 		}
 		return r;
@@ -307,6 +311,8 @@ class LiteralExp: Expression{
 		if(lit.type!=r.lit.type) return false;
 		switch(lit.type){
 			case Tok!"0":
+				assert(lit.str.indexOf('.') == -1 
+					&& r.lit.str.indexOf('.') == -1, "integer literals must not contain '.'");
 				return ℤ(lit.str)==ℤ(r.lit.str);
 			default:
 				return this is r;
@@ -357,6 +363,8 @@ class Identifier: Expression{
 			}
 			return subst[name];
 		}
+		if (auto ty=this.type)
+			this.type=ty.substitute(subst);
 		return this;
 	}
 	override bool unifyImpl(Expression rhs,ref Expression[string] subst,bool meet){

@@ -127,7 +127,8 @@ abstract class Type: Expression{
 	Manifold manifoldImpl(Scope sc) {
 		import std.format : format;
 
-		Identifier manifoldId = new Identifier("manifold " ~ this.toString());
+		// TODO: find something better than this.toString here
+		Identifier manifoldId = new Identifier("manifold " ~ this.toString);
 		if (auto decl = cast(ManifoldDecl)sc.lookup(manifoldId,false,true,Lookup.probing)) {
 			decl = manifoldDeclSemantic(decl, sc);
 			auto mtype = decl.mtype;
@@ -1351,7 +1352,6 @@ class ProductTy: Type{
 		r=r.setTuple(isTuple);
 		if(!r) return false;
 		if(isConst!=r.isConst||isSquare!=r.isSquare||nargs!=r.nargs) {
-			writeln("const, square or nargs diff");
 			return false;
 		}
 		if(annotation<r.annotation||!isClassical&&r.isClassical) return false;
@@ -1749,4 +1749,101 @@ class ParameterSetTy : Type {
 
 ParameterSetTy parameterSetTy(Expression target, Scope sc){
 	return memoize!((Expression target, Scope sc)=>new ParameterSetTy(target, sc))(target, sc);
+}
+
+class TangentVectorTy : Type {
+	Expression target;
+	Scope sc;
+
+	private this(Expression target, Scope sc){
+		this.target = target;
+		this.type=typeTy;
+		this.sc=sc;
+		super();
+	}
+
+	/// returns the Manifold currently associated with the tangent type of target
+	private Manifold manifold() {
+		auto targetType = typeOrDataType(target.type);
+		if (!targetType) return null;
+		auto ty=cast(Type)targetType;
+		if (!ty) return null;
+		return ty.manifold(sc);
+	}
+
+	override TangentVectorTy copyImpl(CopyArgs args){
+		return tangentVectorTy(this.target.copy(), sc);
+	}
+	override string toString(){
+		return target.toString~".tangentVector";
+	}
+	override bool opEquals(Object o){
+		if (auto otherTangentVec = cast(TangentVectorTy)o) {
+			return target==otherTangentVec.target;
+		}
+		return false;
+	}
+	override bool isClassical(){
+		return true;
+	}
+	override bool hasClassicalComponent(){
+		return true;
+	}
+	override Expression evalImpl(Expression ntype){ 
+		if (auto m = this.manifold()) {				
+			return unalias(m.tangentVecTy);
+		}
+		return tangentVectorTy(this.target.eval(), sc); 
+	}
+	// mixin VariableFree;
+	override int componentsImpl(scope int delegate(Expression) dg){
+		return dg(this.target);
+	}
+
+	override bool isSubtypeImpl(Expression other) {
+		if (auto otherTangentVec = cast(TangentVectorTy)other) {
+			auto teval = target.eval();
+			auto otval = otherTangentVec.target.eval();
+			if (target.eval()==otherTangentVec.target.eval()) {
+				return true;
+			}
+		} 
+		if (auto m = this.manifold()) {
+			// given target:T, check T.tangentVector :- other
+			return isSubtype(m.tangentVecTy, other);
+		}
+		return false;
+	}
+	mixin VariableFree;
+	override Expression combineTypesImpl(Expression r,bool meet){
+		if (auto m = this.manifold()) {				
+			// given target:T, combine T.tangentVector :- other
+			return combineTypes(m.tangentVecTy, r, meet);
+		} else if (auto otherTangentVec = cast(TangentVectorTy)r) {
+			auto combinedTarget = combineTypes(target, r, meet);
+			return tangentVectorTy(combinedTarget, sc);
+		} else {
+			return null;
+		}
+	}
+
+	override bool unifyImpl(Expression rhs,ref Expression[string] subst,bool meet){
+		if (auto otherTangentVec = cast(TangentVectorTy)rhs) {
+			return target.unify(otherTangentVec.target, subst, meet);
+		} else {
+			return false;
+		}
+	}
+	override int freeVarsImpl(scope int delegate(string) dg){ 
+		return target.freeVarsImpl(dg);
+	}
+	override Expression substituteImpl(Expression[string] subst){ 
+		return tangentVectorTy(target.substitute(subst), sc);
+	}
+}
+
+TangentVectorTy tangentVectorTy(Expression target, Scope sc) {
+	return memoize!((Expression target, Scope sc){
+		return new TangentVectorTy(target, sc);
+	})(target, sc);
 }
