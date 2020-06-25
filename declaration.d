@@ -456,7 +456,7 @@ class ImportExp: Declaration{
 }
 
 class ManifoldDecl : Declaration {
-	Identifier typeName;
+	Expression typeName;
 	CompoundExp body_;
 	
 	Expression tangentVecExp;

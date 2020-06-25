@@ -873,24 +873,25 @@ class VectorTy: Type, ITupleTy{
 		}
 		// construct element-wise tangentVector
 		Type elementWiseTangentVecTy = this.replacingElementType(unalias(elementMType.tangentVecTy));
-		elementWiseTangentVecTy = aliasTy("(" ~ this.toString() ~ ".tangentVector)", elementWiseTangentVecTy);
 
 		Scope containerScope = elementMType.manifoldDecl.declScope.parent;
 		// use internal ManifoldDeclScope w/o corresponding ManifoldDecl
-		auto declScope = new ManifoldDeclScope(containerScope, null);
+		auto declScope = new ManifoldDeclScope(containerScope, 
+			new ManifoldDecl(new Identifier("`"~this.toString), null));
+		declScope.decl.typeName = this;
 
 		// construct tangentZero using the pointWise operator
 		auto elementWiseTangentVecZero = makePointWiseTangentZeroExp(elementMType, this, elementWiseTangentVecTy, declScope);
 		// construct move operation using pointWise operator (support as built-in in interpreter)
 		auto elementWiseMoveOpDef = makePointWiseMoveOp(elementMType, elementWiseTangentVecTy, declScope);
 
+		declScope.decl.tangentZeroDef = elementWiseTangentVecZero;
+		declScope.decl.moveOpDef = elementWiseMoveOpDef;
+		declScope.decl.tangentVecExp = elementWiseTangentVecTy;
+
 		// semantically process constructed manifold operations
 		foreach(ref op; [elementWiseTangentVecZero, elementWiseMoveOpDef]) {
 			op = cast(FunctionDef)presemantic(op, declScope);
-			if (op.body_ !is null) {
-				op.thisVar = addVar("this", this, op.loc, op.body_.blscope_); // add 'this' var
-			}
-			
 			op = functionDefSemantic(op, declScope);
 		}
 
@@ -945,11 +946,11 @@ FunctionDef makePointWiseMoveOp(Manifold elementManifold, Type tangentVecTy, Sco
 	assert(sc !is null);
 
 	FunctionDef funDef = new PointWiseFunctionDef(new Identifier("move"), [
-		new Parameter(false, new Identifier("along"), tangentVecTy)
+		new Parameter(false, new Identifier("along"), new FieldExp(new Identifier("this"), new Identifier("tangentVector")))
 	], false, elementManifold.moveOpDef, unit);
 
-	funDef.ftype = productTy([true], ["along"], tangentVecTy, unit, false, false, Annotation.none, true);
 	funDef.type = unit;
+	funDef.isParameterized = false;
 
 	return funDef;
 }
@@ -982,8 +983,7 @@ FunctionDef makePointWiseTangentZeroExp(Manifold elementManifold, VectorTy vecto
 	auto re = new ReturnExp(ce);
 
 	auto fd = new FunctionDef(new Identifier("__pointwise_tangentZero"), [],
-		true, null, new CompoundExp([re]));
-	fd.ftype = productTy([], [], unit, tangentVecTy, false, true, Annotation.none, true);
+		true, new FieldExp(new Identifier("this"), new Identifier("tangentVector")), new CompoundExp([re]));
 	fd.type = unit;
 	fd.isParameterized = false;
 
@@ -1659,9 +1659,9 @@ class Manifold: Node {
 
 class AliasTy : Type {
 	string name;
-	Type target;
+	Expression target;
 	enum classical=true;
-	private this(string name, Type target){
+	private this(string name, Expression target){
 		this.name = name;
 		this.target = target;
 		this.type=typeTy;
@@ -1702,13 +1702,13 @@ class AliasTy : Type {
 	}
 }
 
-AliasTy aliasTy(string name, Type target){
-	return memoize!((string name, Type target)=>new AliasTy(name, target))(name, target);
+AliasTy aliasTy(string name, Expression target){
+	return memoize!((string name, Expression target)=>new AliasTy(name, target))(name, target);
 }
 
 T unalias(T)(T type) {
 	if (auto aliasType = cast(AliasTy)type) {
-		return aliasType.target;
+		return cast(Type)aliasType.target;
 	}
 	return type;
 }
@@ -1771,22 +1771,24 @@ class ParameterSetTy : Type {
 	override @property bool isManifoldType() { return true; }
 	
 	override Manifold manifoldImpl(Scope sc) {
-		auto tangentVecTy = tangentVectorTy(this, sc);
+		auto elementSpecificTangentVecTy = tangentVectorTy(new Identifier("this"), sc);
 
 		FunctionDef tangentZeroDef = new FunctionDef(new Identifier("tangentZero"), [], 
-			true, tangentVecTy, null); // body is null, tangentZero for parameter sets is an interpreter built-in
+			true, elementSpecificTangentVecTy, null); // body is null, tangentZero for parameter sets is an interpreter built-in
+		tangentZeroDef.isParameterized = false;
 
-		tangentZeroDef.ftype = productTy([], [], unit, tangentVecTy, false, true, Annotation.none, true);
+		tangentZeroDef.ftype = productTy([], [], unit, elementSpecificTangentVecTy, false, true, Annotation.none, true);
 		tangentZeroDef.type = unit;
 
 		FunctionDef moveOpDef = new FunctionDef(new Identifier("move"), [
-			new Parameter(false, new Identifier("along"), tangentVecTy)
+			new Parameter(false, new Identifier("along"), elementSpecificTangentVecTy)
 		], false, unit, null); // body is null, moveOp is an interpreter built-in
 
-		moveOpDef.ftype = productTy([true], ["along"], tangentVecTy, unit, false, false, Annotation.none, true);
+		moveOpDef.ftype = productTy([true], ["along"], elementSpecificTangentVecTy, unit, false, false, Annotation.none, true);
 		moveOpDef.type = unit;
+		moveOpDef.isParameterized = false;
 
-		return new Manifold(this, moveOpDef, tangentVecTy, tangentZeroDef);
+		return new Manifold(this, moveOpDef, tangentVectorTy(this, sc), tangentZeroDef);
 	}
 }
 
@@ -1800,7 +1802,7 @@ class TangentVectorTy : Type {
 	Scope sc;
 
 	@property isTypeBound() {
-		return bound.type.isTypeTy;
+		return bound.type.isTypeTy || isDataTyId(bound);
 	}
 
 	@property isValueBound() {
@@ -1832,7 +1834,15 @@ class TangentVectorTy : Type {
 		return tangentVectorTy(this.bound.copy(), sc);
 	}
 	override string toString(){
-		return this.bound.toString~".tangentVector";
+		if (isTypeBound) {
+			return this.bound.toString~".tangentVector";
+		} else {
+			auto type = this.bound.type;
+			string typeStr;
+			if (!type) typeStr = "null";
+			else typeStr = type.toString;
+			return typeStr~".tangentVector["~bound.toString~"]";
+		}
 	}
 	override bool opEquals(Object o){
 		if (auto otherTangentVec = cast(TangentVectorTy)o) {

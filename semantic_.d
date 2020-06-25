@@ -173,6 +173,19 @@ Expression presemantic(Declaration expr,Scope sc){
 		static if (language==dp) fsc.allowsParameterDefinitions = fd.isParameterized;
 		fd.type=unit;
 		fd.fscope_=fsc;
+
+		static if (language==dp) {
+			// manifold declarations may refer to manifold element type 
+			// as 'this' in type expressions
+			if (auto manifoldDecl=sc.getManifoldDecl()){
+				Expression manifoldTy=manifoldDecl.typeName.copy();
+				manifoldTy.loc=fd.loc;
+				manifoldTy=typeSemantic(manifoldTy, sc);
+				assert(!!manifoldTy);
+				fd.thisVar=addVar("this", manifoldTy, fd.loc, fsc);
+			}
+		}
+
 		declareParameters(fd,fd.isSquare,fd.params,fsc); // parameter variables
 		if(fd.rret){
 			fd.ret=typeSemantic(fd.rret,fsc);
@@ -1841,6 +1854,7 @@ Expression unwrap(Expression e){
 Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 	if(expr.sstate==SemState.completed||expr.sstate==SemState.error) return expr;
 	if(expr.sstate==SemState.started){
+		assert(false, "cyclic dependency");
 		sc.error("cyclic dependency",expr.loc);
 		expr.sstate=SemState.error;
 		FunctionDef fd=null;
@@ -2131,6 +2145,26 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 			auto ce=new CallExp(idx.e,arg,true,false);
 			ce.loc=idx.loc;
 			return expr=callSemantic(ce,sc,ConstResult.no);
+		}
+		if (auto tvTy=cast(TangentVectorTy)idx.e){
+			assert(!replaceIndex);
+			if (tvTy.isTypeBound) {
+				if (idx.a.length != 1) {
+					sc.error("tangent vector types can only be parameterized by a single argument.", idx.loc);
+					idx.sstate = SemState.error;
+					return idx;
+				}
+				auto arg = expressionSemantic(idx.a[0], sc, ConstResult.no);
+				if (!isSubtype(arg.type, tvTy.bound)) {
+					sc.error(format("tangent vector types can only be parameterized by a value of the corresponding manifold type %s not %s",
+						tvTy.bound, arg.type), arg.loc);
+					idx.sstate = SemState.error;
+					return idx;
+				}
+				return expr=tangentVectorTy(arg, sc);
+			} else {
+				writeln("not a type bound tangent vector type ", tvTy, " ", typeid(tvTy.bound));
+			}
 		}
 		if(idx.e.type.isTypeTy){
 			assert(!replaceIndex);
@@ -2423,7 +2457,7 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 			}
 			tae.sstate=SemState.error;
 		}
-		return tae;
+		return expr=tae;
 	}
 
 	Expression handleUnary(alias determineType)(string name,Expression e,ref Expression e1){
@@ -2856,26 +2890,46 @@ static if (language==dp) Expression manifoldMemberSemantic(Expression target, st
 		return null;
 	}
 
-	// standard case (direct manifold declaration for target type)
-	if (auto targetType=typeOrDataType(target.type)) {
-		// check for recursive access 
-		// TODO: can we include move here and what happens on instance-level recursive access
-		// TODO: does this resolve to the wrong ManifoldDecl if the tangentVector of another type is accessed
-		if(ManifoldDecl manifoldDecl=sc.getManifoldDecl()) { // check if we are in manifold decl
-			if (memberName == "tangentVector") {
-				return manifoldDecl.tangentVecExp=expressionSemantic(manifoldDecl.tangentVecExp, sc, ConstResult.yes);
-			} else if (memberName == "tangentZero") {
-				auto tangentZeroDef = manifoldDecl.tangentZeroDef=functionDefSemantic(manifoldDecl.tangentZeroDef, sc);
-				auto id = new Identifier("tangentZero");
-				id.meaning = tangentZeroDef;
-				auto fe = new FieldExp(target, id);
-				fe.type = tangentZeroDef.ftype;
-				return fe;
+	Expression resolveLocally(Expression target, Expression targetType, string memberName) {
+		if(ManifoldDecl manifoldDecl=sc.getManifoldDecl()) { // check if we are in manifold decl)
+			auto ident = cast(Identifier)manifoldDecl.typeName;
+			bool identMatch = ident&&ident.name==targetType.toString;
+			bool directMatch = manifoldDecl.typeName==targetType;
+
+			if (identMatch||directMatch) {
+				if (memberName == "tangentVector") {
+					assert(!!manifoldDecl.tangentVecExp, text("manifold declaration ", manifoldDecl.name, " is missing tangent vector declaration"));
+					return manifoldDecl.tangentVecExp=expressionSemantic(manifoldDecl.tangentVecExp, sc, ConstResult.yes);
+				} else if (memberName == "tangentZero"||memberName == "move") {
+					assert(!!manifoldDecl.tangentZeroDef, text("manifold declaration ", manifoldDecl.name, " is missing tangentZero definition"));
+					assert(!!manifoldDecl.moveOpDef, text("manifold declaration ", manifoldDecl.name, " is missing move definition"));
+					FunctionDef opDef;
+					if (memberName=="tangentZero") {
+						opDef = manifoldDecl.tangentZeroDef=functionDefSemantic(manifoldDecl.tangentZeroDef, sc);
+					} else if (memberName=="move") {
+						opDef = manifoldDecl.moveOpDef=functionDefSemantic(manifoldDecl.moveOpDef, sc);
+					}
+
+					auto id = new Identifier(memberName);
+					id.meaning = opDef;
+					auto fe = new FieldExp(target, id);
+					fe.type = opDef.ftype.substitute(["this": target]);
+					return fe;
+				}
 			}
 		}
-		
+		return null;
+	}
+
+	// standard case (direct manifold declaration for target type)
+	if (auto targetType=typeOrDataType(target.type)) {
 		// check for type-level access (e.g. ℝ.tangentVector)
 		if (targetType.isTypeTy) {
+			// check for recursive access (e.g. ℝ.tangentVector in manifold declaration for ℝ)
+			if (auto res=resolveLocally(target, target, memberName)) {
+				return res;
+			}
+
 			// handle type variables
 			if (auto ident = cast(Identifier)target) {
 				if ((cast(ManifoldTypeTy)targetType) !is null) {
@@ -2890,9 +2944,14 @@ static if (language==dp) Expression manifoldMemberSemantic(Expression target, st
 
 			if (auto manifoldImpl = elementType.manifold(sc)) {	
 				if (memberName == "tangentVector") {
-					return manifoldImpl.tangentVecTy;
+					return tangentVectorTy(elementType, sc);
 				}
 			}
+		}
+
+		// check for value-level recursive access (e.g. 1.0.tangentVector in manifold declaration for ℝ)
+		if (auto res=resolveLocally(target, targetType, memberName)) {
+			return res;
 		}
 
 		// check for value-level access (e.g. (1.0).tangentVector)
@@ -2901,15 +2960,15 @@ static if (language==dp) Expression manifoldMemberSemantic(Expression target, st
 				auto id = new Identifier(memberName);
 				id.meaning = manifoldImpl.moveOpDef;
 				auto fe = new FieldExp(target, id);
-				fe.type = manifoldImpl.moveOpDef.ftype;
+				fe.type = manifoldImpl.moveOpDef.ftype.substitute(["this": target]);
 				return fe;
 			} else if (memberName == "tangentVector") {
-				return manifoldImpl.tangentVecTy;
+				return tangentVectorTy(target, sc);
 			} else if (memberName == "tangentZero") {
 				auto id = new Identifier(memberName);
 				id.meaning = manifoldImpl.tangentZeroDef;
 				auto fe = new FieldExp(target, id);
-				fe.type = manifoldImpl.tangentZeroDef.ftype;
+				fe.type = manifoldImpl.tangentZeroDef.ftype.substitute(["this": target]);
 				return fe;
 			}
 		}
@@ -2923,7 +2982,8 @@ static if (language==dp) Expression manifoldMemberSemantic(Expression target, st
 			} else {
 				auto fe = new FieldExp(target, new Identifier(memberName));
 				if (memberName == "tangentZero") {
-					fe.type=productTy([], [], unit, tangentVectorTy(target, sc), false, true, Annotation.none, true);
+					fe.type=productTy([], [], unit, tangentVectorTy(target, sc), 
+						false, true, Annotation.none, true);
 				} else if (memberName == "move") {
 					fe.type=productTy([true], ["along"], tangentVectorTy(target, sc), unit, false, false, Annotation.none, true);
 				} else {
@@ -2944,9 +3004,13 @@ static if (language==dp) Expression manifoldMemberSemantic(Expression target, st
 	}
 	// special case: direct AggrTy references (A.tangentVector)
 	if (auto aggrTy=isDataTyId(target)) {
+		// check for recursive access (e.g. ℝ.tangentVector in manifold declaration for ℝ)
+		if (auto res=resolveLocally(target, aggrTy, memberName)) {
+			return res;
+		}
 		if (aggrTy.isParameterized) {
 			// TODO: think about whether this can be done in AggregateTy
-			auto paramExp = new ParameterSetHandleExp(target);
+			auto paramExp = parameterSetTy(target, sc);
 			return expressionSemantic(new FieldExp(paramExp, new Identifier(memberName)), sc, ConstResult.no);
 		}
 	}
@@ -3003,6 +3067,7 @@ bool setFtype(FunctionDef fd){
 	return true;
 }
 FunctionDef functionDefSemantic(FunctionDef fd,Scope sc){
+	assert(fd, "functionDef must not be null");
 	if(fd.sstate==SemState.completed) return fd;
 	if(!fd.fscope_) fd=cast(FunctionDef)presemantic(fd,sc); // TODO: why does checking for fd.scope_ not work? (test3.slq)
 	auto fsc=fd.fscope_;
@@ -3203,7 +3268,7 @@ static if (language==dp) ManifoldDecl manifoldDeclSemantic(ManifoldDecl maniDecl
 			sc.error("manifold tangent vector must be a type", tangentVectorExp.loc);
 			tangentVectorExp.sstate = SemState.error;
 		} else {
-			tangentVecTy = aliasTy(elementType.toString ~ ".tangentVector", tangentVecTy);
+			// tangentVecTy = aliasTy(elementType.toString ~ ".tangentVector", tangentVecTy);
 		}
 	}
 	// type check tangent zero declaration
@@ -3240,7 +3305,7 @@ static if (language==dp) FunctionDef manifoldMoveOpSemantic(FunctionDef moveOpDe
 	auto moveOpTy = productTy([true], ["along"], tangentVecTy, unit, false, false, Annotation.none, true);
 	
 	moveOpDef.isManifoldOp = true;
-	moveOpDef.thisVar = addVar("this",elementType,moveOpDef.loc,moveOpDef.body_.blscope_); // add 'this' var
+	assert(!!moveOpDef.thisVar, "manifold move operation is missing thisVar");
 	moveOpDef = functionDefSemantic(moveOpDef, sc);
 
 	if (!isSubtype(moveOpDef.ftype, moveOpTy)) {

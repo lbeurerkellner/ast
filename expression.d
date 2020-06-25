@@ -1660,6 +1660,13 @@ class ParameterSetHandleExp: Expression{
 	override int componentsImpl(scope int delegate(Expression) dg){
 		return dg(target);
 	}
+
+	override bool opEquals(Object o){
+		if (auto otherPsetHandle = cast(ParameterSetHandleExp)o) {
+			return this.target==otherPsetHandle.target;
+		}
+		return super.opEquals(o);	
+	}
 }
 
 class TapeExp: Expression{
