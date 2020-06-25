@@ -107,12 +107,6 @@ abstract class AstVisitor(T) {
     T handleInitExp(InitExp exp) {
         return handleUnsupportedExp(exp);
     }
-    T handleManifoldMemberExp(UnresolvedManifoldMemberExp exp) {
-        return handleUnsupportedExp(exp);
-    }
-    T handleManifoldMoveExp(ManifoldMoveExp exp) {
-        return handleUnsupportedExp(exp);
-    }
     T handleParameterSetHandleExp(ParameterSetHandleExp exp) {
         return handleUnsupportedExp(exp);
     }
@@ -182,10 +176,6 @@ abstract class AstVisitor(T) {
             return this.handleIndexExp(indexExp);
         } else if (auto initExp = cast(InitExp)expr) {
             return this.handleInitExp(initExp);
-        } else if (auto manifoldMemberExp = cast(UnresolvedManifoldMemberExp)expr) {
-            return this.handleManifoldMemberExp(manifoldMemberExp);
-        } else if (auto manifoldMoveExp = cast(ManifoldMoveExp)expr) {
-            return this.handleManifoldMoveExp(manifoldMoveExp);
         } else if (auto parameterSetHandleExp = cast(ParameterSetHandleExp)expr) {
             return this.handleParameterSetHandleExp(parameterSetHandleExp);
         } else if (auto pullExp = cast(PullExp)expr) {

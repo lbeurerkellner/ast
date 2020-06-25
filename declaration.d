@@ -98,7 +98,6 @@ class Parameter: VarDecl{
 // TODO: Implement more elegantly or expose in the frontend
 // For now, point-wise FunctionDefs are only used internally and most of their
 // semantic properties are not set correctly. 
-// See Manifold manifoldImpl(Type elementType, Scope sc) for the use case.
 class PointWiseFunctionDef: FunctionDef {
 	// actual point-wise definition of the function
 	FunctionDef pointWiseDef;
@@ -107,16 +106,17 @@ class PointWiseFunctionDef: FunctionDef {
 	Expression rret = null;
 	CompoundExp body_ = null;
 
-	this(Identifier name, Parameter[] params, bool isTuple, FunctionDef pointWiseDef)in{
+	this(Identifier name, Parameter[] params, bool isTuple, FunctionDef pointWiseDef, Expression rret)in{
 		assert(isTuple||params.length==1);
 	}body{
-		super(name, params, isTuple, null, null);
+		super(name, params, isTuple, rret, null);
 		this.pointWiseDef = pointWiseDef;
 	}
 
 	override FunctionDef copyImpl(CopyArgs args){
 		enforce(!args.preserveSemantic,"TODO");
-		auto r=new PointWiseFunctionDef(name?name.copy(args):null,params.map!(p=>p.copy(args)).array,isTuple,pointWiseDef.copy(args));
+		auto r=new PointWiseFunctionDef(name?name.copy(args):null,params.map!(p=>p.copy(args)).array,
+			isTuple,pointWiseDef.copy(args), rret.copy(args));
 		r.annotation=annotation;
 		return r;
 	}
@@ -460,7 +460,7 @@ class ManifoldDecl : Declaration {
 	CompoundExp body_;
 	
 	Expression tangentVecExp;
-	Expression tangentZeroExp;
+	FunctionDef tangentZeroDef;
 	FunctionDef moveOpDef;
 
 	ManifoldDeclScope declScope;
@@ -483,22 +483,22 @@ class ManifoldDecl : Declaration {
 		// determined in presemantic step
 		this.moveOpDef = null;
 		this.tangentVecExp = null;
-		this.tangentZeroExp = null;
+		this.tangentZeroDef = null;
 	}
 
-	private this(Identifier name, CompoundExp body_, FunctionDef moveOpDef, Expression tangentVecExp, Expression tangentZeroExp, ManifoldDeclScope declScope){
+	private this(Identifier name, CompoundExp body_, FunctionDef moveOpDef, Expression tangentVecExp, FunctionDef tangentZeroDef, ManifoldDeclScope declScope){
 		super(name);
 		this.body_ = body_;
 		
 		// determined from body_ in presemantic step
 		this.moveOpDef = moveOpDef;
 		this.tangentVecExp = tangentVecExp;
-		this.tangentZeroExp = tangentZeroExp;
+		this.tangentZeroDef = tangentZeroDef;
 		this.declScope = declScope;
 	}
 
 	override ManifoldDecl copyImpl(CopyArgs args){
-		return new ManifoldDecl(name.copy(), body_.copy(), moveOpDef.copy(), tangentVecExp.copy(), tangentZeroExp.copy(), declScope);
+		return new ManifoldDecl(name.copy(), body_.copy(), moveOpDef.copy(), tangentVecExp.copy(), tangentZeroDef.copy(), declScope);
 	}
 
 	override @property string kind(){ return "manifold"; }
