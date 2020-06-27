@@ -1841,6 +1841,12 @@ class TangentVectorTy : Type {
 			string typeStr;
 			if (!type) typeStr = "null";
 			else typeStr = type.toString;
+			if (auto parameterSetTy = cast(ParameterSetTy)type) {
+				if (!parameterSetTy.target.isTypeTy) {
+					// omit redundant point-specification in squared brackets
+					return typeStr~".tangentVector";
+				}
+			}
 			return typeStr~".tangentVector["~bound.toString~"]";
 		}
 	}
