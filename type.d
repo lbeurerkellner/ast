@@ -1971,15 +1971,18 @@ class TangentVectorTy : Type {
 }
 
 class ParameterSetTangentVectorTy: TangentVectorTy {
-	this(ParameterSetTy bound, Scope sc){
+	this(Expression bound, Scope sc){
 		super(bound, sc);
 	}
 
 	override string toString() {
-		if (auto parameterSetTy = cast(ParameterSetTy)bound) {
-			if (!parameterSetTy.target.isTypeTy) {
-				// omit redundant point-specification in squared brackets
-				return parameterSetTy.target.toString~".tangentVector";
+		if (isTypeBound) {
+			if (auto paramTy = cast(ParameterSetTy)bound) {
+				if (!paramTy.target.type.isTypeTy&&cast(FunTy)paramTy.target.type is null) {
+					auto paramTypeTy = parameterSetTy(paramTy.target.type, sc);
+					auto paramSetHandle = new ParameterSetHandleExp(paramTy.target);
+					return paramTypeTy.toString~".tangentVector["~paramSetHandle.toString~"]";
+				}
 			}
 		}
 		return super.toString();
@@ -2001,9 +2004,12 @@ TangentVectorTy tangentVectorTy(Expression target, Scope sc) {
 	if (auto paramTy=cast(ParameterSetTy)target.type) {
 		// if target is of value-bound ParameterSetTy, use it as target instead
 		if (paramTy.isValueBound) target = paramTy;
+		// if target is value of ParameterSetTy
+		// else target = parameterSetTy(target, sc);
 	}
 	return memoize!((Expression target, Scope sc){
 		if (auto paramTy=cast(ParameterSetTy)target) return new ParameterSetTangentVectorTy(paramTy, sc);
+		if (auto paramTy=cast(ParameterSetTy)target.type) return new ParameterSetTangentVectorTy(target, sc);
 		return new TangentVectorTy(target, sc);
 	})(target, sc);
 }

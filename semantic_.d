@@ -1835,6 +1835,7 @@ Expression cmpType(Expression t1,Expression t2){
 			return null;
 	}else{
 		t1=unalias(t1.eval()); t2=unalias(t2.eval());
+		if (cast(StringTy)t1&&cast(StringTy)t2) return Bool(true);
 		auto a1=cast(ArrayTy)t1,a2=cast(ArrayTy)t2;
 		auto v1=cast(VectorTy)t1,v2=cast(VectorTy)t2;
 		Expression n1=a1?a1.next:v1?v1.next:null,n2=a2?a2.next:v2?v2.next:null;
@@ -3418,7 +3419,7 @@ static if (language==dp) ManifoldDecl manifoldDeclSemantic(ManifoldDecl maniDecl
 	}
 
 	maniDecl.type = unit;
-	maniDecl.mtype = new Manifold(elementType, maniDecl.moveOpDef, tangentVecTy, tangentZeroDef, maniDecl.combineDef);
+	maniDecl.mtype = new Manifold(elementType, maniDecl.moveOpDef, tangentVecTy, tangentZeroDef);
 	maniDecl.mtype.manifoldDecl = maniDecl;
 
 	if(maniDecl.sstate!=SemState.error)
