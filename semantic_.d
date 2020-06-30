@@ -1261,6 +1261,8 @@ AssignExp assignExpSemantic(AssignExp ae,Scope sc){
 			checkLhs(fe.e);
 		}else if(auto tae=cast(TypeAnnotationExp)lhs){
 			checkLhs(tae.e);
+		}else if(auto psh=cast(ParameterSetHandleExp)lhs){
+			checkLhs(psh.target);
 		}else{
 		LbadAssgnmLhs:
 			sc.error(format("cannot assign to %s",lhs),ae.e1.loc);
@@ -1275,7 +1277,7 @@ AssignExp assignExpSemantic(AssignExp ae,Scope sc){
 			sc.error(format("cannot assign %s to variable %s of type %s",ae.e2.type,id,id.type),ae.loc);
 			assert(!!id.meaning);
 			sc.note("declared here",id.meaning.loc);
-		}else sc.error(format("cannot assign %s to %s",ae.e2.type,ae.e1.type),ae.loc);
+		}else sc.error(format(text("cannot assign %s to %s ", ae),ae.e2.type,ae.e1.type),ae.loc);
 		ae.sstate=SemState.error;
 	}
 	static if(language==silq){
@@ -1767,10 +1769,7 @@ Expression arithmeticType(bool preserveBool)(Expression t1, Expression t2){
 	if (cast(VectorTy)t1&&cast(VectorTy)t2) {
 		return broadcastedType(cast(VectorTy)t1, cast(VectorTy)t2);
 	}
-	// TODO: can we avoid this check here (maybe do an eval at the beginning)
-	if (cast(TangentVectorTy)t1||cast(TangentVectorTy)t2) {
-		return joinTypes(t1,t2);
-	}
+	t1=t1.eval(); t2=t2.eval();
 	if(!(isNumeric(t1)&&isNumeric(t2))) return null;
 	auto r=joinTypes(t1,t2);
 	static if(!preserveBool){
@@ -2074,6 +2073,20 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 			fe.sstate=SemState.error;
 			return fe;
 		}
+		static if (language==dp) {
+			if (auto e = parameterSetMemberSemantic(fe, sc)) {
+				return expr=e;
+			}
+			if (auto e = parameterSetTangentVectorMemberSemantic(fe, sc)) {
+				return expr=e;
+			}
+			if (auto e = manifoldMemberSemantic(fe.e, fe.f.name, sc)) {
+				return expr=e;
+			}
+			if (auto e = parameterSetParamMemberSemantic(fe.e.type, fe, sc)) {
+				return expr=e;
+			}
+		}
 		DatDecl aggrd=null;
 		if(auto aggrty=cast(AggregateTy)fe.e.type) aggrd=aggrty.decl;
 		else if(auto id=cast(Identifier)fe.e.type) if(auto dat=cast(DatDecl)id.meaning) aggrd=dat;
@@ -2084,14 +2097,6 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 					aggrd=decl;
 					arg=ce.arg;
 				}
-			}
-		}
-		static if (language==dp) {
-			if (auto e = parameterSetMemberSemantic(fe, sc)) {
-				return expr=e;
-			}
-			if (auto e = manifoldMemberSemantic(fe.e, fe.f.name, sc)) {
-				return expr=e;
 			}
 		}
 		if(aggrd){
@@ -2162,8 +2167,17 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 					return idx;
 				}
 				return expr=tangentVectorTy(arg, sc);
-			} else {
-				writeln("not a type bound tangent vector type ", tvTy, " ", typeid(tvTy.bound));
+			}
+		}
+		// handle parameter set indexing
+		if (auto paramTy = cast(ParameterSetTy) idx.e.type) {
+			return expr=parameterSetIndexSemantic(idx, idx.a, sc);
+		}
+		if (auto tvTy = cast(TangentVectorTy) idx.e.type) {
+			if (auto paramTy = cast(ParameterSetTy) tvTy.bound) {
+				return expr=parameterSetIndexSemantic(idx, idx.a, sc);
+			} else if (auto parameterSetHandleXp = cast(ParameterSetHandleExp) tvTy.bound) {
+				return expr=parameterSetIndexSemantic(idx, idx.a, sc);
 			}
 		}
 		if(idx.e.type.isTypeTy){
@@ -2515,6 +2529,11 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 			propErr(processedE2,e);
 			e.type = determineType(processedE1.type,processedE2.type);
 			e.e2 = processedE2;
+			// check whether processedE1 explicitly supports the binary operator
+			if (!e.type&&processedE1.type&&processedE2.type&&
+				processedE1.type.supportsBinaryOperatorImpl(e.opRep, processedE2.type)) {
+				e.type = meetTypes(processedE1.type, processedE2.type);
+			}
 			if(!e.type){
 				sc.error(format("incompatible types %s and %s for %s",processedE1.type,processedE2.type,name),e.loc);
 				e.sstate=SemState.error;
@@ -2846,12 +2865,84 @@ Expression conditionSemantic(bool allowQuantum=false)(Expression e,Scope sc){
 	return e;
 }
 
+/// resolves only parameter members of A, given fe is access on type params[A] or params[a] where a:A (contextTy=params[A])
+static if (language==dp) FieldExp parameterSetParamMemberSemantic(Expression contextTy, FieldExp fe, Scope sc) {
+	auto paramSetTy=cast(ParameterSetTy)contextTy;
+	if (!paramSetTy) return null;
+
+	// determine underlying type of parameter set target expression
+	Expression targetType;
+	if (paramSetTy.isTypeBound) targetType = paramSetTy.target;
+	else targetType = paramSetTy.target.type;
+
+	// determine type of field expression in non-parameter context
+	//  - construct dummy FieldExp of type targetType
+	auto target = new Identifier("_"); target.type = targetType; target.sstate = SemState.completed;
+	//  - semantically process dummy FieldExp on target to obtain member
+	auto nonParamSetFieldExp = new FieldExp(target, new Identifier(fe.f.name));
+	nonParamSetFieldExp = cast(FieldExp)expressionSemantic(nonParamSetFieldExp, sc, ConstResult.no);
+	
+	// not found in non-parameter context aggregate type
+	if (nonParamSetFieldExp is null || nonParamSetFieldExp.sstate==SemState.error) return null;
+
+	// otherwise, fe could be resolved in non-parameter context
+	VarDecl decl = cast(VarDecl)nonParamSetFieldExp.f.meaning;
+	// check that field resolves to valid parameter field (e.g. not a function member)
+	if (decl is null) return null;
+
+	// allowed members on param[A] are
+	// 1. member of A, which refers to AggregateTy value with parameters itself
+	if (auto aggrty = isDataTyId(decl.vtype)) {
+		fe.f.type = parameterSetTy(aggrty, sc);
+		fe.type = parameterSetTy(aggrty, sc);
+	} else {
+	// 2. member is parameter of A
+		if (!decl.isParamDefinition) return null;
+		fe.f.type = nonParamSetFieldExp.type;
+		fe.type = nonParamSetFieldExp.type;
+	}
+
+	// if value-bound, refine type of fe by using information in paramSetTy (type of fe.e)
+	// (e.g. a.f: params[F] becomes a.f: params[a.f] if a: params[a])
+	// (case 2: e.g. a.f: params[F] becomes a.f: params[a.f] if a: params[A])
+	if (paramSetTy.isValueBound&&cast(ParameterSetTy)fe.type) {
+		auto continuedValueBound = expressionSemantic(new FieldExp(paramSetTy.target, new Identifier(fe.f.name)), sc, ConstResult.yes);
+		fe.f.type = parameterSetTy(continuedValueBound, sc);
+		fe.type = fe.f.type;
+	}
+
+	fe.f.meaning = decl;
+	fe.sstate = SemState.completed;
+
+	return fe;
+}
+
+static if (language==dp) Expression parameterSetTangentVectorMemberSemantic(FieldExp fe, Scope sc) {
+	TangentVectorTy tangentVecTy = cast(TangentVectorTy) fe.e.type;
+	if (!tangentVecTy) return null;
+	// replace tangentVecTy with evaluated TangentVectorTy instance
+	if (auto evalutatedTvTy = cast(TangentVectorTy)tangentVecTy.eval()) tangentVecTy = evalutatedTvTy;
+
+	// try to resolve fe.f on type A (assuming tangentVecTy.bound: params[A])
+	FieldExp nonTangentVecField = parameterSetParamMemberSemantic(tangentVecTy.bound, fe.copy(), sc);
+	if (!nonTangentVecField) return null;
+
+	// derive actual fe.type by changing it to the corresponding .tangentVector type
+	auto tangentFieldType = typeSemantic(new FieldExp(nonTangentVecField, new Identifier("tangentVector")), sc);
+	assert(tangentFieldType);
+
+	fe.f.type = tangentFieldType;
+	fe.type = tangentFieldType;
+	fe.f.meaning = nonTangentVecField.f.meaning;
+	
+	return fe;
+}
+
 static if (language==dp) Expression parameterSetMemberSemantic(FieldExp fe, Scope sc) {
 	const auto memberName = fe.f.name;
 	if (memberName != "params") {
 		return null;
 	}
-
 	// case: parameterised AggrTy as manifolds
 	if (auto aggrTy=isDataTyId(fe.e.type)) {
 		if (aggrTy.isParameterized) {
@@ -2885,6 +2976,55 @@ Type typeOrDataType(Expression e) {
 	return null;
 }
 
+static if (language==dp) Expression parameterSetIndexSemantic(IndexExp idx, Expression[] args, Scope sc) {
+	if (args.length < 1) {
+		sc.error("a parameter set expression must be indexed by a parameter declaration", idx.loc);
+		idx.sstate = SemState.error;
+		return idx;
+	}
+	if (args.length > 2) {
+		sc.error("too many index arguments for a parameter set expression", idx.loc);
+		idx.sstate = SemState.error;
+		return idx;
+	}
+	// determine parameter declaration from first index arguments
+	auto paramRef = args[0];
+	VarDecl paramDecl;
+	if (auto decl=cast(VarDecl)paramRef) {
+		paramDecl=decl;
+	} else {
+		paramRef=expressionSemantic(paramRef, sc, ConstResult.yes);
+		if (auto ident=cast(Identifier)paramRef) {
+			auto meaning=cast(VarDecl)ident.meaning;
+			if (!meaning) {
+				sc.error("non-variable parameters are not supported at this point", paramRef.loc);
+				idx.sstate = SemState.error;
+				return idx;
+			}
+			paramDecl=meaning;
+		} else {	
+			sc.error(format("not a supported parameter expression: %s", paramRef.toString), paramRef.loc);
+			idx.sstate = SemState.error;
+			return idx;
+		}
+	}
+	// make sure first index argument always points to the parameter declaration
+	// idx.a[0] = paramDecl;
+
+	// if provided, handle parameter context expression
+	if (args.length == 2) {
+		auto context = args[1];
+		context=expressionSemantic(context,sc,ConstResult.yes);
+		if (!(isSubtype(context.type, ℕt) || isSubtype(context.type, stringTy))) {
+			sc.error(format("parameter context must be a natural number or string not %s", context.type.toString()),context.loc);
+			context.sstate=SemState.error;
+			return idx;
+		}
+	}
+
+	return new ParameterSetIndexExp(idx.e, idx.a, paramDecl);
+}
+
 static if (language==dp) Expression manifoldMemberSemantic(Expression target, string memberName, Scope sc) {
 	if (!["move", "tangentVector", "tangentZero"].any!(n => n == memberName)) {
 		return null;
@@ -2895,14 +3035,21 @@ static if (language==dp) Expression manifoldMemberSemantic(Expression target, st
 			auto ident = cast(Identifier)manifoldDecl.typeName;
 			bool identMatch = ident&&ident.name==targetType.toString;
 			bool directMatch = manifoldDecl.typeName==targetType;
+			bool aggrTyMatch = false;
+			
+			auto targetAsIdent=cast(Identifier)target;
+			if (targetAsIdent&&target.type.isTypeTy) {
+				auto declName = targetAsIdent.meaning.name;
+				aggrTyMatch = ident&&declName.name==ident.name;
+			}
 
 			if (identMatch||directMatch) {
 				if (memberName == "tangentVector") {
-					assert(!!manifoldDecl.tangentVecExp, text("manifold declaration ", manifoldDecl.name, " is missing tangent vector declaration"));
+					assert(!!manifoldDecl.tangentVecExp, text("manifold declaration ", manifoldDecl.name, " is missing a tangent vector declaration"));
 					return manifoldDecl.tangentVecExp=expressionSemantic(manifoldDecl.tangentVecExp, sc, ConstResult.yes);
 				} else if (memberName == "tangentZero"||memberName == "move") {
-					assert(!!manifoldDecl.tangentZeroDef, text("manifold declaration ", manifoldDecl.name, " is missing tangentZero definition"));
-					assert(!!manifoldDecl.moveOpDef, text("manifold declaration ", manifoldDecl.name, " is missing move definition"));
+					assert(!!manifoldDecl.tangentZeroDef, text("manifold declaration ", manifoldDecl.name, " is missing a tangentZero definition"));
+					assert(!!manifoldDecl.moveOpDef, text("manifold declaration ", manifoldDecl.name, " is missing a move definition"));
 					FunctionDef opDef;
 					if (memberName=="tangentZero") {
 						opDef = manifoldDecl.tangentZeroDef=functionDefSemantic(manifoldDecl.tangentZeroDef, sc);
@@ -2963,7 +3110,7 @@ static if (language==dp) Expression manifoldMemberSemantic(Expression target, st
 				fe.type = manifoldImpl.moveOpDef.ftype.substitute(["this": target]);
 				return fe;
 			} else if (memberName == "tangentVector") {
-				return tangentVectorTy(target, sc);
+				return tangentVectorTy(target, sc).substitute(["this": target]);
 			} else if (memberName == "tangentZero") {
 				auto id = new Identifier(memberName);
 				id.meaning = manifoldImpl.tangentZeroDef;
@@ -3161,27 +3308,6 @@ static if(language==dp) FunctionDef pullbackSemantic(FunctionDef fd, Scope sc) {
 	primal.adjoint = fd;
 
 	// check pullback ftype
-	Type primalReturnTy = cast(Type)primal.ftype.cod.eval();
-	Type primalParamTy = cast(Type)primal.ftype.dom.eval();
-	assert(!!primalReturnTy);
-	assert(!!primalParamTy);
-	auto manifoldDom = primalReturnTy.manifold(sc);
-	auto manifoldCod = primalParamTy.manifold(sc);
-
-	if (!manifoldDom) {
-		sc.error(format("cannot define pullback for function %s with non-differentiable return type %s.", 
-			fd.primalName.toString, primalReturnTy.toString), fd.loc);
-		fd.sstate=SemState.error;
-		return fd;
-	}
-
-	if (!manifoldCod) {
-		sc.error(format("cannot define pullback for function %s with non-differentiable parameters %s.", 
-			fd.primalName.toString, primalParamTy.toString), fd.loc);
-		fd.sstate=SemState.error;
-		return fd;
-	}
-
 	ProductTy pty = pullbackTy(primal, sc);
 	if (!pty) {
 		sc.error(format("failed to determine pullback signature for function %s with signature %s.", 
@@ -3292,7 +3418,7 @@ static if (language==dp) ManifoldDecl manifoldDeclSemantic(ManifoldDecl maniDecl
 	}
 
 	maniDecl.type = unit;
-	maniDecl.mtype = new Manifold(elementType, maniDecl.moveOpDef, tangentVecTy, tangentZeroDef);
+	maniDecl.mtype = new Manifold(elementType, maniDecl.moveOpDef, tangentVecTy, tangentZeroDef, maniDecl.combineDef);
 	maniDecl.mtype.manifoldDecl = maniDecl;
 
 	if(maniDecl.sstate!=SemState.error)
@@ -3339,13 +3465,13 @@ static if (language==dp) ManifoldDecl manifoldDeclPresemantic(ManifoldDecl maniD
 			} else if (funDef.name.name == "tangentZero") {
 				tangentZeroDecls ~= funDef;
 			} else {
-				sc.error(format("not a supported manifold operation %s", funDef.name.name),funDef.loc);
+				sc.error(text("not supported in manifold declaration ", e.toString, " (", typeid(e), ")"),e.loc);
 			}
 		} else if (auto defExp = cast(DefineExp) e) {
 			e = makeDeclaration(defExp, success, declScope);
 			auto singleDef = cast(SingleDefExp)e;
 			if (!singleDef) {
-				sc.error("not supported in manifold declaration",e.loc);
+				sc.error(text("not supported in manifold declaration ", e.toString, " (", typeid(e), ")"),e.loc);
 				maniDecl.sstate = SemState.error;
 			}
 			auto name = singleDef.decl.name.name;
@@ -3356,19 +3482,26 @@ static if (language==dp) ManifoldDecl manifoldDeclPresemantic(ManifoldDecl maniD
 				maniDecl.sstate = SemState.error;
 			}
 		} else {
-			sc.error("not supported in manifold declaration",e.loc);
+			sc.error(text("not supported in manifold declaration ", e.toString, " (", typeid(e), ")"),e.loc);
 			maniDecl.sstate = SemState.error;
 		}
 		propErr(e,bdy);
 	}
 	// check type and presence of manifold declarations
 	if (tangentVectorExps.empty) {
-		sc.error("manifold is missing tangentVector type declaration", maniDecl.loc);
+		sc.error("manifold is missing a tangentVector type declaration", maniDecl.loc);
 		maniDecl.sstate = SemState.error;
+		return maniDecl;
 	}
 	if (tangentZeroDecls.empty) {
-		sc.error("manifold is missing tangentZero declaration", maniDecl.loc);
+		sc.error("manifold is missing a tangentZero declaration", maniDecl.loc);
 		maniDecl.sstate = SemState.error;
+		return maniDecl;
+	}
+	if (moveOpDecls.empty) {
+		sc.error("manifold is missing a move operation", maniDecl.loc);
+		maniDecl.sstate = SemState.error;
+		return maniDecl;
 	}
 	
 	bdy.type=unit;
@@ -3377,10 +3510,10 @@ static if (language==dp) ManifoldDecl manifoldDeclPresemantic(ManifoldDecl maniD
 	maniDecl.declScope = declScope;
 	
 	// initialise additional properties based on new information
-	maniDecl.tangentZeroDef = tangentZeroDecls.empty ? null : tangentZeroDecls[0];
 	maniDecl.tangentVecExp = tangentVectorExps.empty ? null : tangentVectorExps[0];
 	// trigger presemantic processing of operation definitions
 	maniDecl.moveOpDef = moveOpDecls.empty ? null : cast(FunctionDef)presemantic(moveOpDecls[0], declScope);
+	maniDecl.tangentZeroDef = tangentZeroDecls.empty ? null : cast(FunctionDef)presemantic(tangentZeroDecls[0], declScope);
 
 	if (maniDecl.sstate != SemState.error)
 		maniDecl.sstate = SemState.presemantic;
@@ -3820,6 +3953,32 @@ static if(language==dp) private Expression prependingToDomain(Expression first, 
     return tupleTy([first, dom]);
 }
 
+static if(language==dp) Type[] tupleTyComponents(Expression type) {
+	if (auto tupleTy=cast(TupleTy)type) {
+		return tupleTy.types.map!(t => typeOrDataType(t)).array;
+	}
+	if (type==unit) return [];
+	return [typeOrDataType(type)];
+}
+
+static if(language==dp) Expression tupleTyIfRequired(Expression[] types) {
+	if (types.length>1) {
+		return tupleTy(types);
+	} else if (types.length==1) {
+		return types[0];
+	} else {
+		return unit;
+	}
+}
+
+// TODO actually implement .manifold for AggregateTy
+static if(language==dp) bool hasManifoldImpl(Type ty, Scope sc) {
+	if (auto aggrty = cast(AggregateTy)ty) {
+		return aggrty.isParameterized;
+	}
+	return ty.manifold(sc) !is null;
+}
+
 static if(language==dp) ProductTy pullbackTy(FunctionDef primalFd, Scope sc) {
 	// skip built-in functions
     if (primalFd.body_ is null) {
@@ -3855,32 +4014,65 @@ static if(language==dp) ProductTy pullbackTy(FunctionDef primalFd, Scope sc) {
     }
 	
 	ProductTy ftype = primalFd.ftype;
+	
 	// switch around dom/cod since the pullback goes the other way round
-	Type dom = typeOrDataType(ftype.cod);
-	Type cod = typeOrDataType(ftype.dom);
+	Type[] domTypes = tupleTyComponents(ftype.cod);
+	Type[] codTypes = tupleTyComponents(ftype.dom);
 
-	// malformed ftype
-	if (dom is null || cod is null) {
+	// no pullback for functions w/o return type/parameters
+	if (domTypes.length==0||codTypes.length==0) {
 		return null;
 	}
 
-	// no pullbacks for functions w/o arguments or w/o return types 
-	if (dom==unit||cod==unit) {
-		return  null;
+	Manifold[] manifoldDomTypes = [];
+
+	foreach(domType; domTypes) {
+		// malformed ftype
+		if (domType is null) {
+			return null;
+		}
+		// no pullbacks for functions w/o arguments
+		if (domType==unit) {
+			return null;
+		}
+
+		auto manifoldDom = domType.manifold(sc);
+
+		if (manifoldDom is null) {
+			// parameterised AggregateTy return types are also fine
+			if (auto aggrty = cast(AggregateTy)domType) {
+				if (aggrty.isParameterized) {
+					// use type-constraint param[A] manifold
+					manifoldDom = parameterSetTy(aggrty, sc).manifold(sc);
+				}
+			}
+		}
+
+		if (manifoldDom is null) {
+			sc.error(format("failed to determine pullback signature for function %s with" ~ 
+				" non-differentiable return type %s.", primalFd.name.name, domType.toString), primalFd.loc);
+			return null;
+		}
+
+		manifoldDomTypes ~= [manifoldDom];
 	}
 
-	auto manifoldDom = dom.manifold(sc);
-	auto manifoldCod = cod.manifold(sc);
+	foreach(idx, codType; codTypes) {
+		// malformed ftype
+		if (codType is null) {
+			return null;
+		}
+		// no pullbacks for functions w/o return types
+		if (codType==unit) {
+			return null;
+		}
 
-	if (manifoldDom is null) {
-		sc.error(format("failed to determine pullback signature for function %s with" ~ 
-			" non-differentiable return type %s.", primalFd.name.name, dom.toString), primalFd.loc);
-		return null;
-	}
-	if (manifoldCod is null) {
-		sc.error(format("failed to determine pullback signature for function %s with" ~ 
-			" non-differentiable parameter type %s.", primalFd.name.name, cod.toString), primalFd.loc);
-		return null;
+		if (!hasManifoldImpl(codType, sc)) {
+			sc.error(format("failed to determine pullback signature for function %s with" ~ 
+				" non-differentiable parameter type %s.", primalFd.name.name, codType.toString), 
+				primalFd.params[idx].loc);
+			return null;
+		}
 	}
 	
 	auto pullbackSquareParamNames = primalFd.params.map!(p => p.name.name).array;
@@ -3888,7 +4080,7 @@ static if(language==dp) ProductTy pullbackTy(FunctionDef primalFd, Scope sc) {
 	const bool squareDomIsTuple = pullbackSquareParamNames.length > 1;
 	
 	auto pullbackParamNames = ["v"];
-	auto pullbackDom = manifoldDom.tangentVecTy;
+	auto pullbackDom = tupleTyIfRequired(manifoldDomTypes.map!(m => m.tangentVecTy).array);
 
 	Expression pullbackCod;
 	Expression[] pullbackCodComponents;

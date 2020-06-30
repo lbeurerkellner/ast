@@ -1717,6 +1717,14 @@ class ParameterSetTy : Type {
 	Expression target;
 	Scope sc;
 
+	@property isTypeBound() {
+		return target.type.isTypeTy || isDataTyId(target);
+	}
+
+	@property isValueBound() {
+		return !isTypeBound;
+	}
+
 	enum classical=true;
 	private this(Expression target, Scope sc){
 		super();
@@ -1753,6 +1761,33 @@ class ParameterSetTy : Type {
 		return dg(target);
 	}
 
+	override bool supportsBinaryOperatorImpl(string op, Expression operand) {
+		if (op=="+") {
+			return cast(ParameterSetTy)operand !is null;
+		}
+		return false;
+	}
+
+	override Expression combineTypesImpl(Expression rawRhs, bool meet) {
+		if (auto rhs = cast(ParameterSetTy)rawRhs) {
+			if (this.isTypeBound&&rhs.isTypeBound) { // combine type bounds
+				if (auto combinedBound=this.target.combineTypesImpl(rhs, meet)) {
+					return parameterSetTy(combinedBound, sc);
+				}
+			} else if (this.isValueBound&&rhs.isValueBound) {
+				if (this.target==rhs.target) { // check for equal bounds
+					return this;
+				} else {
+					// otherwise loosen type to combination of the value types of lhs and rhs
+					if (auto combinedTypeBound=this.target.type.combineTypesImpl(rhs.target.type, meet)) {
+						return parameterSetTy(combinedTypeBound, sc);
+					}
+				}
+			}
+		}
+		return super.combineTypesImpl(rawRhs, meet);
+	}
+
 	override bool isSubtypeImpl(Expression other) {
 		if (ParameterSetTy otherTy = cast(ParameterSetTy)other) {
 			if (auto otherTargetTy = typeOrDataType(otherTy.target)) {
@@ -1764,7 +1799,7 @@ class ParameterSetTy : Type {
 				}
 			}
 		}
-		
+
 		return this == other;
 	}
 
@@ -1775,10 +1810,10 @@ class ParameterSetTy : Type {
 
 		FunctionDef tangentZeroDef = new FunctionDef(new Identifier("tangentZero"), [], 
 			true, elementSpecificTangentVecTy, null); // body is null, tangentZero for parameter sets is an interpreter built-in
-		tangentZeroDef.isParameterized = false;
 
 		tangentZeroDef.ftype = productTy([], [], unit, elementSpecificTangentVecTy, false, true, Annotation.none, true);
 		tangentZeroDef.type = unit;
+		tangentZeroDef.isParameterized = false;
 
 		FunctionDef moveOpDef = new FunctionDef(new Identifier("move"), [
 			new Parameter(false, new Identifier("along"), elementSpecificTangentVecTy)
@@ -1809,7 +1844,7 @@ class TangentVectorTy : Type {
 		return !isTypeBound;
 	}
 
-	private this(Expression bound, Scope sc){
+	this(Expression bound, Scope sc){
 		this.bound = bound;
 		this.type=typeTy;
 		this.sc=sc;
@@ -1841,12 +1876,6 @@ class TangentVectorTy : Type {
 			string typeStr;
 			if (!type) typeStr = "null";
 			else typeStr = type.toString;
-			if (auto parameterSetTy = cast(ParameterSetTy)type) {
-				if (!parameterSetTy.target.isTypeTy) {
-					// omit redundant point-specification in squared brackets
-					return typeStr~".tangentVector";
-				}
-			}
 			return typeStr~".tangentVector["~bound.toString~"]";
 		}
 	}
@@ -1863,11 +1892,17 @@ class TangentVectorTy : Type {
 		return true;
 	}
 	override Expression evalImpl(Expression ntype){ 
-		auto res = tangentVectorTy(this.bound.eval(), sc);
+		TangentVectorTy res = tangentVectorTy(this.bound.eval(), sc);
 		if (auto m = res.manifold()) {				
 			if ((cast(TangentVectorTy)m.tangentVecTy) is null) {
 				return unalias(m.tangentVecTy);
 			}
+		}
+		if (auto aggrty = isDataTyId(res.bound)) {
+			return tangentVectorTy(parameterSetTy(aggrty, sc), sc);
+		}
+		if (auto aggrty = isDataTyId(res.bound.type)) {
+			return tangentVectorTy(parameterSetTy(res.bound, sc), sc);
 		}
 		return res; 
 	}
@@ -1881,6 +1916,9 @@ class TangentVectorTy : Type {
 			if (isTypeBound&&otherTangentVec.isTypeBound) {
 				return isSubtype(bound.eval(), otherTangentVec.bound.eval());
 			} else if (isValueBound&&otherTangentVec.isTypeBound) {
+				auto evaluatedBoundType = bound.eval().type;
+				return isSubtype(evaluatedBoundType, otherTangentVec.bound.eval());
+			} else if (isTypeBound&&otherTangentVec.isValueBound) {
 				auto evaluatedBoundType = bound.eval().type;
 				return isSubtype(evaluatedBoundType, otherTangentVec.bound.eval());
 			} else { // both value-bound
@@ -1932,8 +1970,40 @@ class TangentVectorTy : Type {
 	}
 }
 
+class ParameterSetTangentVectorTy: TangentVectorTy {
+	this(ParameterSetTy bound, Scope sc){
+		super(bound, sc);
+	}
+
+	override string toString() {
+		if (auto parameterSetTy = cast(ParameterSetTy)bound) {
+			if (!parameterSetTy.target.isTypeTy) {
+				// omit redundant point-specification in squared brackets
+				return parameterSetTy.target.toString~".tangentVector";
+			}
+		}
+		return super.toString();
+	}
+	
+	override bool supportsBinaryOperatorImpl(string op, Expression operand) {
+		if (auto psetTvTy = cast(ParameterSetTangentVectorTy)operand) {
+			return this.bound.supportsBinaryOperatorImpl(op, psetTvTy.bound);
+		}
+		return super.supportsBinaryOperatorImpl(op, operand);
+	}
+}
+
 TangentVectorTy tangentVectorTy(Expression target, Scope sc) {
+	// always use params[a] (ParameterSetTy) in place of a.params (ParameterSetHandleExp) in the type model
+	if (auto parameterSetHandleExp = cast(ParameterSetHandleExp)target) {
+		target = parameterSetTy(parameterSetHandleExp.target, sc);
+	}
+	if (auto paramTy=cast(ParameterSetTy)target.type) {
+		// if target is of value-bound ParameterSetTy, use it as target instead
+		if (paramTy.isValueBound) target = paramTy;
+	}
 	return memoize!((Expression target, Scope sc){
+		if (auto paramTy=cast(ParameterSetTy)target) return new ParameterSetTangentVectorTy(paramTy, sc);
 		return new TangentVectorTy(target, sc);
 	})(target, sc);
 }

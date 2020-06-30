@@ -171,6 +171,12 @@ abstract class Expression: Node{
 		return null;
 	}
 
+	/// override this to support the binary operator 'op' with the given operand expression
+	/// when returning true here, combineTypesImpl must handle 'operand' correspondingly
+	bool supportsBinaryOperatorImpl(string op, Expression operand){
+		return false;
+	}
+
 	ITupleTy isTupleTy(){
 		return null;
 	}
@@ -292,6 +298,15 @@ class LiteralExp: Expression{
 		tok.str=text(i);
 		auto r=new LiteralExp(tok);
 		r.type=ℕt(true);
+		r.sstate=SemState.completed;
+		return r;
+	}
+	static LiteralExp makeString(string s){
+		Token tok;
+		tok.type=Tok!"``";
+		tok.str=s;
+		auto r=new LiteralExp(tok);
+		r.type=stringTy(true);
 		r.sstate=SemState.completed;
 		return r;
 	}
@@ -1122,6 +1137,13 @@ class FieldExp: Expression{
 		if(ne == e && ntype == type) return this;
 		return new FieldExp(ne,f);
 	}
+
+	override bool opEquals(Object o) {
+		if (auto fe=cast(FieldExp)o) {
+			return e==fe.e && f==fe.f;
+		}
+		return super.opEquals(o);
+	}
 }
 
 class IteExp: Expression{
@@ -1712,5 +1734,16 @@ class UntapeExp: Expression{
 	mixin VariableFree; // TODO
 	override int componentsImpl(scope int delegate(Expression) dg){
         return dg(name);
+	}
+}
+
+class ParameterSetIndexExp: IndexExp {
+	VarDecl parameterDecl;
+
+	this(Expression exp, Expression[] args, VarDecl parameterDecl){
+		super(exp, args, false);
+		
+		this.parameterDecl = parameterDecl;
+		this.type = parameterDecl.vtype;
 	}
 }

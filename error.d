@@ -111,7 +111,7 @@ class VerboseErrorHandler: ErrorHandler{
 	}
 protected:
 	void write(string source, int line, int column, string error, bool isNote = false){
-		stderr.writeln(source,':',line,":",column,isNote?": note: ":": error: ",error);
+		stderr.writeln(source,':',line," :",column,isNote?": note: ":": error: ",error);
 	}
 	void display(string line){
 		stderr.writeln(line);
