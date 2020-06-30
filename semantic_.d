@@ -2531,9 +2531,11 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 			e.type = determineType(processedE1.type,processedE2.type);
 			e.e2 = processedE2;
 			// check whether processedE1 explicitly supports the binary operator
-			if (!e.type&&processedE1.type&&processedE2.type&&
-				processedE1.type.supportsBinaryOperatorImpl(e.opRep, processedE2.type)) {
-				e.type = meetTypes(processedE1.type, processedE2.type);
+			if (!e.type&&processedE1.type&&processedE2.type) {
+				auto t1 = processedE1.type.eval(); auto t2 = processedE2.type.eval();
+				if (t1.supportsBinaryOperatorImpl(e.opRep, t2)) {
+					e.type = meetTypes(processedE1.type, processedE2.type);
+				}
 			}
 			if(!e.type){
 				sc.error(format("incompatible types %s and %s for %s",processedE1.type,processedE2.type,name),e.loc);
