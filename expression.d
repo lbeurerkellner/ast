@@ -301,6 +301,15 @@ class LiteralExp: Expression{
 		r.sstate=SemState.completed;
 		return r;
 	}
+	static LiteralExp makeFloat(float v) {
+		Token tok;
+		tok.type=Tok!".0f";
+		tok.str=text(v);
+		auto r=new LiteralExp(tok);
+		r.type=ℝ(true);
+		r.sstate=SemState.completed;
+		return r;
+	}
 	static LiteralExp makeString(string s){
 		Token tok;
 		tok.type=Tok!"``";

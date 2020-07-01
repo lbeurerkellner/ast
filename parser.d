@@ -87,13 +87,14 @@ int getLbp(TokenType type) pure{ // operator precedence
 	case Tok!"-",Tok!"+",Tok!"!",Tok!"~":
 		return 140;  */
 	case Tok!"^":  return 150; // power
+	case Tok!"grad":
+		return 159;
 	// postfix operators
 	case Tok!".",Tok!"++",Tok!"--":
 	case Tok!"(", Tok!"[": // function call and indexing
 		return 160;
 	static if(language==dp) {
-	case Tok!"pull":
-	case Tok!"init":
+	case Tok!"pull", Tok!"init":
 		return 161;
 	}
 	case Tok!"noparam", Tok!"nondiff":
@@ -520,6 +521,9 @@ struct Parser{
 				case Tok!"init":
 					expect(Tok!"init");
 					return res=New!InitExp(parseExpression(lbp!(Tok!"pull")));
+				case Tok!"grad":
+					expect(Tok!"grad");
+					return res=New!(UnaryExp!(Tok!"grad"))(parseExpression(lbp!(Tok!"grad")));
 				case Tok!"nondiff":
 					expect(Tok!"nondiff");
 					return res=New!(UnaryExp!(Tok!"nondiff"))(parseExpression(lbp!(Tok!"nondiff")));

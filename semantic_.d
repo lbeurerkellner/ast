@@ -50,6 +50,7 @@ alias AndExp=BinaryExp!(Tok!"&&");
 static if(language==dp) {
 	alias NonDiffTypeExp=UnaryExp!(Tok!"nondiff");
 	alias NoParamTypeExp=UnaryExp!(Tok!"noparam");
+	alias GradExp=UnaryExp!(Tok!"grad");
 }
 
 alias Exp=Expression;
@@ -2874,6 +2875,37 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 		}
 		return expr=productTy(prodTy.isConst, prodTy.names, prodTy.dom, prodTy.cod, prodTy.isSquare,
 			prodTy.isTuple, prodTy.annotation, prodTy.isClassical, prodTy.isParameterized, prodTy.isInitialized, false);
+	}
+	if (auto gradExp=cast(GradExp)expr) {
+		gradExp.e=expressionSemantic(gradExp.e, sc, constResult);
+		gradExp.type=unit;
+		
+		auto ce=cast(CallExp)gradExp.e;
+		if (!ce) {
+			sc.error("the gradient operator can only be applied to function call expressions (e.g. grad f(x))", gradExp.loc);
+			gradExp.sstate = SemState.error;
+			return gradExp;
+		}
+
+		ProductTy ftype = cast(ProductTy)ce.e.type;
+		if (!ftype) return ce;
+		auto cod = ftype.cod;
+		if (cod!=ℝ(true)) {
+			sc.error("the gradient operator can only be applied to functions with co-domain ℝ", gradExp.loc);
+			gradExp.sstate = SemState.error;
+			return gradExp;
+		}
+		auto fname = ce.e.toString;
+		if (!pullbackTy(fname, ftype, sc, ce.e)) {
+			sc.error(format("%s does not have a pullback", fname), ce.e.loc);
+			return gradExp;
+		}
+
+		auto pullExp = new PullExp(ce.e);
+		auto outerPullCallExp = new CallExp(pullExp, ce.arg, true, true);
+		auto innerPullCallExp = new CallExp(outerPullCallExp, LiteralExp.makeFloat(1.0), false, true);
+
+		return expressionSemantic(innerPullCallExp, sc, constResult);
 	}
 	if(auto initExp=cast(InitExp)expr){
 		initExp.target=expressionSemantic(initExp.target, sc, ConstResult.yes);
