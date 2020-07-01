@@ -96,6 +96,8 @@ int getLbp(TokenType type) pure{ // operator precedence
 	case Tok!"init":
 		return 161;
 	}
+	case Tok!"noparam", Tok!"nondiff":
+		return 119;
 	//case Tok!"i": return 45; //infix
 	default: return -1;
 	}
@@ -518,6 +520,12 @@ struct Parser{
 				case Tok!"init":
 					expect(Tok!"init");
 					return res=New!InitExp(parseExpression(lbp!(Tok!"pull")));
+				case Tok!"nondiff":
+					expect(Tok!"nondiff");
+					return res=New!(UnaryExp!(Tok!"nondiff"))(parseExpression(lbp!(Tok!"nondiff")));
+				case Tok!"noparam":
+					expect(Tok!"noparam");
+					return res=New!(UnaryExp!(Tok!"noparam"))(parseExpression(lbp!(Tok!"noparam")));
 			}
 			case Tok!"__error": mixin(rule!(ErrorExp,"_"));
 			//case Tok!"[": mixin(rule!(ArrayLiteralExp,"_","OPT",ArgumentList,"]"));
@@ -529,7 +537,9 @@ struct Parser{
 	LambdaExp parseLambdaExp(bool semicolon=false)(){
 		mixin(SetLoc!LambdaExp);
 		static if(language==silq) if(util.among(ttype,Tok!"lambda",Tok!"λ")) nextToken(); // TODO: add support in PSI as well?
-		return res=New!LambdaExp(parseFunctionDef!(true,semicolon));
+		auto fd = parseFunctionDef!(true,semicolon);
+		fd.isParameterized=false;
+		return res=New!LambdaExp(fd);
 	}
 	
 	// left denotation
@@ -694,7 +704,6 @@ struct Parser{
 	}
 	Expression parseExpression(int rbp = 0,bool allowLambda=true,bool statement=false){
 		switch(ttype){
-			static if (language==dp) case Tok!"noparam": return parseNoParamFunctionDef();
 			case Tok!"def": return parseFunctionDef();
 			case Tok!"dat": return parseDatDecl();
 			case Tok!"import": return parseImport();
@@ -709,6 +718,10 @@ struct Parser{
 			static if(language==silq) case Tok!"forget": return parseForget();
 			static if (language==dp) case Tok!"pullback": {
 				if (aheadLooksLikePullbackDecl()) return parseFunctionDef();
+				else break;
+			}
+			static if (language==dp) case Tok!"noparam": {
+				if (aheadLooksLikeNoParamFunDef()) return parseNoParamFunctionDef();
 				else break;
 			}
 			static if (language==dp) case Tok!"manifold": {
@@ -774,6 +787,9 @@ struct Parser{
 	}
 	static if(language==dp) bool aheadLooksLikePullbackDecl() {
 		return ttype==Tok!"pullback" && peek.type==Tok!"i";
+	}
+	static if(language==dp) bool aheadLooksLikeNoParamFunDef() {
+		return ttype==Tok!"noparam" && peek.type==Tok!"def";
 	}
 	FunctionDef parseFunctionDef(bool lambda=false,bool semicolon=!lambda)(){
 		mixin(SetLoc!FunctionDef);
@@ -850,7 +866,13 @@ struct Parser{
 		
 		res.isSquare=isSquare;
 		res.annotation=annotation;
-		static if(language==dp) res.isDifferentiable=!isNonDiff;
+		static if(language==dp) {
+			res.isDifferentiable=!isNonDiff;
+			if (isPullback) {
+				res.isParameterized=false;
+				res.isDifferentiable=false;
+			}
+		}
 
 		return res;
 	}

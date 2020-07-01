@@ -46,6 +46,12 @@ alias EqExp=BinaryExp!(Tok!"=");
 alias NeqExp=BinaryExp!(Tok!"≠");
 alias OrExp=BinaryExp!(Tok!"||");
 alias AndExp=BinaryExp!(Tok!"&&");
+
+static if(language==dp) {
+	alias NonDiffTypeExp=UnaryExp!(Tok!"nondiff");
+	alias NoParamTypeExp=UnaryExp!(Tok!"noparam");
+}
+
 alias Exp=Expression;
 
 void propErr(Expression e1,Expression e2){
@@ -183,6 +189,16 @@ Expression presemantic(Declaration expr,Scope sc){
 				manifoldTy=typeSemantic(manifoldTy, sc);
 				assert(!!manifoldTy);
 				fd.thisVar=addVar("this", manifoldTy, fd.loc, fsc);
+			}
+			// make sure the inner lambda expression of pullback declarations
+			// is marked as nondiff in the AST
+			if (fd.isPullback) {
+				auto bdy = fd.body_; if (!bdy) return expr;
+				auto firstStmt = bdy.s[0]; if (!firstStmt) return expr;
+				auto retExp = cast(ReturnExp)firstStmt; if (!retExp) return expr;
+				auto lambdaExp = cast(LambdaExp)retExp.e; if (!lambdaExp) return expr;
+				lambdaExp.fd.isDifferentiable = false;
+				lambdaExp.fd.isParameterized = false;
 			}
 		}
 
@@ -1564,7 +1580,7 @@ Expression callSemantic(CallExp ce,Scope sc,ConstResult constResult){
 						if(auto constructor=cast(FunctionDef)decl.body_.ascope_.lookup(decl.name,false,false,Lookup.consuming)){
 							if(auto cty=cast(FunTy)typeForDecl(constructor)){
 								assert(ft.cod.isTypeTy);
-								nft=productTy(ft.isConst,ft.names,ft.dom,cty,ft.isSquare,ft.isTuple,ft.annotation,true);
+								nft=productTy(ft.isConst,ft.names,ft.dom,cty,ft.isSquare,ft.isTuple,ft.annotation,true, ft.isParameterized, ft.isInitialized, ft.isDifferentiable);
 							}
 						}
 					}
@@ -1911,6 +1927,11 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 		if(le.fd.sstate==SemState.completed)
 			le.type=typeForDecl(le.fd);
 		if(le.fd.sstate==SemState.completed) le.sstate=SemState.completed;
+		if (le.fd.isParameterized) {
+			sc.error("parameterized lamdba expression are not supported",le.loc);
+			le.sstate=SemState.error;
+			return le;
+		}
 		return le;
 	}
 	if(auto fd=cast(FunctionDef)expr){
@@ -2673,7 +2694,9 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 			expr.sstate=SemState.error;
 			return expr;
 		}
-		return expr=funTy(t1[0],t1[1],t2,false,!!t1[1].isTupleTy()&&t1[0].length!=1,ex.annotation,false);
+		static if(language==dp) return expr=funTy(t1[0],t1[1],t2,false,!!t1[1].isTupleTy()&&t1[0].length!=1,
+			ex.annotation,false,true, false, true);
+		else return expr=funTy(t1[0],t1[1],t2,false,!!t1[1].isTupleTy()&&t1[0].length!=1,ex.annotation,false);
 	}
 	if(auto fa=cast(RawProductTy)expr){
 		expr.type=typeTy();
@@ -2688,7 +2711,9 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 		auto types=fa.params.map!(p=>p.vtype).array;
 		assert(fa.isTuple||types.length==1);
 		auto dom=fa.isTuple?tupleTy(types):types[0];
-		return expr=productTy(const_,names,dom,cod,fa.isSquare,fa.isTuple,fa.annotation,false);
+		static if(language==dp) return expr=productTy(const_,names,dom,cod,fa.isSquare,fa.isTuple,
+			fa.annotation,false, true, false, true);
+		else return expr=productTy(const_,names,dom,cod,fa.isSquare,fa.isTuple,fa.annotation,false);
 	}
 	if(auto ite=cast(IteExp)expr){
 		ite.cond=conditionSemantic!true(ite.cond,sc);
@@ -2793,30 +2818,30 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 		if (pullExp.target.sstate != SemState.completed) {
 			return pullExp;
 		}
+		// use string representation of target as name in error messages
+		auto fname = pullExp.target.toString; 
 
-		if (auto ident = cast(Identifier)pullExp.target) {
-			FunctionDef primal = cast(FunctionDef)sc.lookup(ident,false,true,Lookup.probing);
-			FunctionDef adjoint = cast(FunctionDef)sc.lookup(pullbackDefName(ident),false,true,Lookup.probing);
-			pullExp.type = pullbackTy(primal, sc);
+		auto ftype = cast(ProductTy)pullExp.target.type;
+		pullExp.type=unit;
 
-			if (!primal) { 
-				sc.error("can only call pullback of functions", pullExp.loc);
-				pullExp.sstate = SemState.error;
-				return pullExp;
-			}
+		if (!ftype) {
+			sc.error("can only call pullback of functions", pullExp.loc);
+			pullExp.sstate = SemState.error;
+			return pullExp;
+		}
 
-			if (pullExp.type is null) {
-				sc.error(format("function %s does not have a pullback", primal.name.name), pullExp.loc);
-				pullExp.sstate = SemState.error;
-				return pullExp;
-			}
+		if (!ftype.isDifferentiable) {
+			sc.error(format("non-differentiable %s does not have a pullback", fname), pullExp.loc);
+			pullExp.sstate = SemState.error;
+			return pullExp;
+		}
 
-			// if adjoint is already known at this time (explicitly defined by user),
-			// establish linking
-			primal.adjoint = adjoint;
-		} else {
-			sc.error("could not type pullback", pullExp.loc);
-			pullExp.type=unit;
+		pullExp.type = pullbackTy(fname, ftype, sc, expr);
+
+		if (pullExp.type is null) {
+			sc.error(format("%s does not have a pullback", fname), pullExp.loc);
+			pullExp.sstate = SemState.error;
+			return pullExp;
 		}
 
 		return pullExp;
@@ -2827,17 +2852,43 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 	if(auto tapeExp=cast(TapeExp)expr){
 		return tapeExp;
 	}
+	if(auto npt=cast(NoParamTypeExp)expr){
+		npt.e = expressionSemantic(npt.e, sc, ConstResult.yes);
+		ProductTy prodTy = cast(ProductTy)npt.e;
+		if (!prodTy) {
+			sc.error("operator noparam can only be applied to function type expressions", npt.loc);
+			npt.sstate = SemState.error;
+			return npt;
+		}
+		return expr=productTy(prodTy.isConst, prodTy.names, prodTy.dom, prodTy.cod, prodTy.isSquare,
+			prodTy.isTuple, prodTy.annotation, prodTy.isClassical, false, false, prodTy.isDifferentiable);
+	}
+	if(auto ndt=cast(NonDiffTypeExp)expr){
+		ndt.e = expressionSemantic(ndt.e, sc, ConstResult.yes);
+		ProductTy prodTy = cast(ProductTy)ndt.e;
+		if (!prodTy) {
+			writeln(ndt.e);
+			sc.error("operator nondiff can only be applied to function type expressions", ndt.loc);
+			ndt.sstate = SemState.error;
+			return ndt;
+		}
+		return expr=productTy(prodTy.isConst, prodTy.names, prodTy.dom, prodTy.cod, prodTy.isSquare,
+			prodTy.isTuple, prodTy.annotation, prodTy.isClassical, prodTy.isParameterized, prodTy.isInitialized, false);
+	}
 	if(auto initExp=cast(InitExp)expr){
 		initExp.target=expressionSemantic(initExp.target, sc, ConstResult.yes);
 		propErr(initExp.target, initExp);
 		initExp.type=unit;
 
 		if (auto funType = cast(FunTy)initExp.target.type) {
-			Expression.CopyArgs args;
-			args.preserveSemantic = true;
-			auto initialisedType = funType.copyImpl(args);
-			initialisedType.isParameterized = true;
-			initialisedType.isInitialised = true;
+			if (!funType.isParameterized) {
+				sc.error(format("cannot initialize non-parameterized function of type %s",funType.toString),initExp.target.loc);
+				initExp.sstate=SemState.error;
+				return initExp;
+			}
+
+			auto initialisedType = productTy(funType.isConst, funType.names, funType.dom, funType.cod, funType.isSquare, 
+				funType.isTuple, funType.annotation, funType.isClassical, true, true, funType.isDifferentiable);
 			initExp.type = initialisedType;
 		} else {
 			sc.error(format("cannot initialize expressions of type %s",initExp.target.type),initExp.target.loc);
@@ -2961,7 +3012,7 @@ static if (language==dp) Expression parameterSetMemberSemantic(FieldExp fe, Scop
 	}
 	// case: initialised functions as manifolds
 	if (auto funTy=cast(FunTy)fe.e.type) {
-		if (funTy.isParameterized && funTy.isInitialised) {
+		if (funTy.isParameterized && funTy.isInitialized) {
 			auto paramExp = new ParameterSetHandleExp(fe.e);
 			return expressionSemantic(paramExp, sc, ConstResult.no);
 		}
@@ -3166,7 +3217,7 @@ static if (language==dp) Expression manifoldMemberSemantic(Expression target, st
 	}
 	// special case: initialised functions as manifolds
 	if (auto funTy=cast(FunTy)target.type) {
-		if (funTy.isParameterized && funTy.isInitialised) {
+		if (funTy.isParameterized && funTy.isInitialized) {
 			// TODO: think about whether this can be done in ProductTy
 			auto paramExp = new ParameterSetHandleExp(target);
 			return expressionSemantic(new FieldExp(paramExp, new Identifier(memberName)), sc, ConstResult.no);
@@ -3202,10 +3253,14 @@ bool setFtype(FunctionDef fd){
 	}
 	assert(fd.isTuple||pty.length==1);
 	auto pt=fd.isTuple?tupleTy(pty):pty[0];
-	fd.ftype=productTy(pc,pn,pt,fd.ret,fd.isSquare,fd.isTuple,fd.annotation,!fd.context||fd.context.vtype==contextTy(true));
 
 	if (language==dp) {
-		fd.ftype.isParameterized = fd.isParameterized;
+		fd.ftype=productTy(pc,pn,pt,fd.ret,fd.isSquare,fd.isTuple,
+							fd.annotation,!fd.context||fd.context.vtype==contextTy(true), 
+							fd.isParameterized, false, fd.isDifferentiable);
+	} else {
+		fd.ftype=productTy(pc,pn,pt,fd.ret,fd.isSquare,fd.isTuple,
+							fd.annotation,!fd.context||fd.context.vtype==contextTy(true));
 	}
 
 	assert(fd.retNames==[]);
@@ -3292,6 +3347,8 @@ FunctionDef functionDefSemantic(FunctionDef fd,Scope sc){
 static if(language==dp) FunctionDef pullbackSemantic(FunctionDef fd, Scope sc) {
 	assert(fd.isPullback);
 	assert(fd.primalName !is null);
+	assert(!fd.isDifferentiable, "pullbacks must not be declared differentiable");
+	assert(!fd.isParameterized, "pullbacks must not be parameterized");
 
 	FunctionDef primal = cast(FunctionDef)sc.lookup(fd.primalName,false,false,Lookup.probing);
 	if (!primal) {
@@ -3318,7 +3375,6 @@ static if(language==dp) FunctionDef pullbackSemantic(FunctionDef fd, Scope sc) {
 		return fd;
 	}
 	ProductTy fty = fd.ftype;
-
 	// check pullback signature
 	if (!isSubtype(fty, pty) || !isSubtype(pty, fty)) {
 		sc.error(format("pullback for function %s requires signature %s not %s.", 
@@ -3464,8 +3520,12 @@ static if (language==dp) ManifoldDecl manifoldDeclPresemantic(ManifoldDecl maniD
 		if (auto funDef = cast(FunctionDef) e) {
 			manifoldOpDefs[funDef.name] = funDef;
 			if (funDef.name.name == "move") {
+				// manifold members must always be non-parameterized
+				funDef.isParameterized = false;
 				moveOpDecls ~= funDef;
 			} else if (funDef.name.name == "tangentZero") {
+				// manifold members must always be non-parameterized
+				funDef.isParameterized = false;
 				tangentZeroDecls ~= funDef;
 			} else {
 				sc.error(text("not supported in manifold declaration ", e.toString, " (", typeid(e), ")"),e.loc);
@@ -4015,9 +4075,11 @@ static if(language==dp) ProductTy pullbackTy(FunctionDef primalFd, Scope sc) {
     if (!primalFd.isDifferentiable) {
         return null;
     }
-	
-	ProductTy ftype = primalFd.ftype;
-	
+
+	return pullbackTy(primalFd.name.name, primalFd.ftype, sc, primalFd);
+}
+
+static if(language==dp) ProductTy pullbackTy(string name, ProductTy ftype, Scope sc, Node errNode) {
 	// switch around dom/cod since the pullback goes the other way round
 	Type[] domTypes = tupleTyComponents(ftype.cod);
 	Type[] codTypes = tupleTyComponents(ftype.dom);
@@ -4053,7 +4115,7 @@ static if(language==dp) ProductTy pullbackTy(FunctionDef primalFd, Scope sc) {
 
 		if (manifoldDom is null) {
 			sc.error(format("failed to determine pullback signature for function %s with" ~ 
-				" non-differentiable return type %s.", primalFd.name.name, domType.toString), primalFd.loc);
+				" non-differentiable return type %s.", name, domType.toString), errNode.loc);
 			return null;
 		}
 
@@ -4072,13 +4134,12 @@ static if(language==dp) ProductTy pullbackTy(FunctionDef primalFd, Scope sc) {
 
 		if (!hasManifoldImpl(codType, sc)) {
 			sc.error(format("failed to determine pullback signature for function %s with" ~ 
-				" non-differentiable parameter type %s.", primalFd.name.name, codType.toString), 
-				primalFd.params[idx].loc);
+				" non-differentiable parameter type %s.", name, codType.toString), errNode.loc);
 			return null;
 		}
 	}
 	
-	auto pullbackSquareParamNames = primalFd.params.map!(p => p.name.name).array;
+	auto pullbackSquareParamNames = ftype.names.array;
 	auto pullbackSquareDom = ftype.dom;
 	const bool squareDomIsTuple = pullbackSquareParamNames.length > 1;
 	
@@ -4090,7 +4151,6 @@ static if(language==dp) ProductTy pullbackTy(FunctionDef primalFd, Scope sc) {
 	foreach(idx, param; pullbackSquareParamNames) {
 			auto id = new Identifier(param);
 			id.type = ftype.argTy(idx);
-			id.meaning = primalFd.params[idx];
 			pullbackCodComponents ~= [tangentVectorTy(id, sc)];
 	}
 	if (pullbackCodComponents.length == 1) {
@@ -4099,9 +4159,11 @@ static if(language==dp) ProductTy pullbackTy(FunctionDef primalFd, Scope sc) {
 		pullbackCod = tupleTy(pullbackCodComponents);
 	}
 	
-	auto pullbackOpTy = productTy([true], pullbackParamNames, pullbackDom, pullbackCod, false, false, Annotation.none, true);
+	// TODO: consider what happens to .isParameterize, .isInitialized here
+	auto pullbackOpTy = productTy([true], pullbackParamNames, pullbackDom, pullbackCod, false, false, 
+								  Annotation.none, true, false, false, false);
 	return productTy(ftype.isConst, pullbackSquareParamNames, pullbackSquareDom, pullbackOpTy, 
-		true, squareDomIsTuple, Annotation.none, true);
+		true, squareDomIsTuple, Annotation.none, true, false, false, false);
 }
 static if(language==dp) Expression binaryPullbackTy(BinaryPullbackCallExp binaryPullbackCallExp, Scope sc) {
 	auto domT1 = cast(Type)binaryPullbackCallExp.e1.type;

@@ -976,6 +976,7 @@ FunctionDef makePointWiseTangentZeroExp(Manifold elementManifold, VectorTy vecto
 	], false, null, new CompoundExp([
 		new ReturnExp(pointWiseCallExp)
 	])));
+	pointWiseLambda.fd.isParameterized = false;
 
 	auto thisRef = new Identifier("this");
 	auto args = new TupleExp([thisRef, pointWiseLambda]);
@@ -1125,32 +1126,72 @@ class ProductTy: Type{
 
 	static if(language==dp){
 		bool isParameterized=false;
-		bool isInitialised=false;
+		bool isInitialized=false;
+		bool isDifferentiable=false;
 	}
 
-	private this(bool[] isConst,string[] names,Expression dom,Expression cod,bool isSquare,bool isTuple,Annotation annotation,bool isClassical_)in{
-		// TODO: assert that all names are distinct
-		if(isTuple){
-			auto tdom=dom.isTupleTy;
-			assert(!!tdom);
-			assert(names.length==tdom.length);
-			assert(isConst.length==tdom.length);
-		}else{
-			assert(names.length==1);
-			assert(isConst.length==1);
+	static if(language==dp) {
+		private this(bool[] isConst,string[] names,
+				 Expression dom,Expression cod,
+				 bool isSquare,bool isTuple,
+				 Annotation annotation,bool isClassical_,
+				 bool isParameterized, bool isInitialized, bool isDifferentiable)in{
+			// TODO: assert that all names are distinct
+			if(isTuple){
+				auto tdom=dom.isTupleTy;
+				assert(!!tdom);
+				assert(names.length==tdom.length);
+				assert(isConst.length==tdom.length);
+			}else{
+				assert(names.length==1);
+				assert(isConst.length==1);
+			}
+			assert(cod.type.isTypeTy,text(cod));
+		}body{
+			this.isConst=isConst; // TODO: don't track this in PSI
+			this.names=names; this.dom=dom; this.cod=cod;
+			this.isSquare=isSquare; this.isTuple=isTuple;
+			this.annotation=annotation;
+			static if(language==silq){this.isClassical_=isClassical_;
+				if(this.isClassical) classicalTy=this;
+				else classicalTy=new ProductTy(isConst,names,dom,cod,isSquare,isTuple,annotation,true);
+			}
+
+			this.isParameterized=isParameterized;
+			this.isInitialized=isInitialized;
+			this.isDifferentiable=isDifferentiable;
+
+			// TODO: report DMD bug, New!ProductTy does not work
 		}
-		assert(cod.type.isTypeTy,text(cod));
-	}body{
-		this.isConst=isConst; // TODO: don't track this in PSI
-		this.names=names; this.dom=dom; this.cod=cod;
-		this.isSquare=isSquare; this.isTuple=isTuple;
-		this.annotation=annotation;
-		static if(language==silq){this.isClassical_=isClassical_;
-			if(this.isClassical) classicalTy=this;
-			else classicalTy=new ProductTy(isConst,names,dom,cod,isSquare,isTuple,annotation,true);
+	} else {
+		private this(bool[] isConst,string[] names,
+				 Expression dom,Expression cod,
+				 bool isSquare,bool isTuple,
+				 Annotation annotation,bool isClassical_)in{
+			// TODO: assert that all names are distinct
+			if(isTuple){
+				auto tdom=dom.isTupleTy;
+				assert(!!tdom);
+				assert(names.length==tdom.length);
+				assert(isConst.length==tdom.length);
+			}else{
+				assert(names.length==1);
+				assert(isConst.length==1);
+			}
+			assert(cod.type.isTypeTy,text(cod));
+		}body{
+			this.isConst=isConst; // TODO: don't track this in PSI
+			this.names=names; this.dom=dom; this.cod=cod;
+			this.isSquare=isSquare; this.isTuple=isTuple;
+			this.annotation=annotation;
+			static if(language==silq){this.isClassical_=isClassical_;
+				if(this.isClassical) classicalTy=this;
+				else classicalTy=new ProductTy(isConst,names,dom,cod,isSquare,isTuple,annotation,true);
+			}
+			// TODO: report DMD bug, New!ProductTy does not work
 		}
-		// TODO: report DMD bug, New!ProductTy does not work
 	}
+
 	override ProductTy copyImpl(CopyArgs args){
 		return this;
 	}
@@ -1187,6 +1228,10 @@ class ProductTy: Type{
 					if(isSquare) d=del[0]~d~del[1];
 				}else d=addp(isConst[0],dom,del);
 			}else d=addp(isConst[0],dom,del);
+			static if(language==dp) {
+				if (!isDifferentiable) d = "nondiff " ~ d;
+				d = (isParameterized&&!isInitialized ? "param" : "noparam") ~ " " ~ d;
+			}
 			static if(language==silq) auto arrow=(isClassical?"!":"")~"→";
 			else enum arrow="→";
 			r=d~" "~arrow~(annotation?to!string(annotation):"")~" "~c;
@@ -1232,7 +1277,9 @@ class ProductTy: Type{
 		auto nnames=names.dup;
 		nnames[i]=nname;
 		auto nvar=varTy(nname,argTy(i));
-		return productTy(isConst,nnames,dom,cod.substitute(oname,nvar),isSquare,isTuple,annotation,isClassical_);
+		static if (language==dp) return productTy(isConst,nnames,dom,cod.substitute(oname,nvar),isSquare,isTuple,
+						 annotation,isClassical_, isParameterized, isInitialized, isDifferentiable);
+		else return productTy(isConst,nnames,dom,cod.substitute(oname,nvar),isSquare,isTuple,annotation,isClassical_);
 	}
 	private ProductTy relabelAway(string oname)in{
 		assert(names.canFind(oname));
@@ -1261,7 +1308,9 @@ class ProductTy: Type{
 	}body{
 		Expression[string] subst;
 		foreach(i;0..names.length) subst[names[i]]=varTy(nnames[i],argTy(i));
-		return productTy(isConst,nnames,dom,cod.substitute(subst),isSquare,isTuple,annotation,isClassical_);
+		static if(language==dp) return productTy(isConst,nnames,dom,cod.substitute(subst),isSquare,isTuple,
+						 annotation,isClassical_,isParameterized,isInitialized,isDifferentiable);
+		else return productTy(isConst,nnames,dom,cod.substitute(subst),isSquare,isTuple,annotation,isClassical_);
 	}
 	override ProductTy substituteImpl(Expression[string] subst){
 		foreach(n;names){
@@ -1290,7 +1339,9 @@ class ProductTy: Type{
 			if(ndom.impliesConst&&!nIsConst[0])
 				nIsConst=[true];
 		}
-		return productTy(nIsConst,names,ndom,ncod,isSquare,isTuple,annotation,isClassical_);
+		static if (language==dp) return productTy(nIsConst,names,ndom,ncod,isSquare,isTuple,
+						 annotation,isClassical_, isParameterized, isInitialized, isDifferentiable);
+		else return productTy(nIsConst,names,ndom,ncod,isSquare,isTuple,annotation,isClassical_);
 	}
 	override bool unifyImpl(Expression rhs,ref Expression[string] subst,bool meet){
 		auto r=cast(ProductTy)rhs; // TODO: get rid of duplication (same code in opEquals)
@@ -1384,6 +1435,12 @@ class ProductTy: Type{
 		if(isConst!=r.isConst||isSquare!=r.isSquare||nargs!=r.nargs) {
 			return false;
 		}
+		static if(language==dp) {
+			if (!isDifferentiable&&r.isDifferentiable) return false;
+			bool lRequiresInitialization = isParameterized&&!isInitialized;
+			bool rRequiresInitialization = r.isParameterized&&!r.isInitialized;
+			if (lRequiresInitialization!=rRequiresInitialization) return false;
+		}
 		if(annotation<r.annotation||!isClassical&&r.isClassical) return false;
 		auto name=freshName("x",r);
 		auto vars=varTy(name,r.dom);
@@ -1409,6 +1466,12 @@ class ProductTy: Type{
 		}
 		if(isConst!=r.isConst||isSquare!=r.isSquare||nargs!=r.nargs)
 			return null;
+		static if(language==dp) {
+			auto combinationIsDifferentiable = isDifferentiable&&r.isDifferentiable;
+			if (meet&&isDifferentiable!=r.isDifferentiable) return null;
+			if (isParameterized!=r.isParameterized) return null;
+			if (isInitialized!=r.isInitialized) return null;
+		}
 		if(isTuple){
 			assert(names==r.names);
 			assert(!!tpl);
@@ -1420,7 +1483,9 @@ class ProductTy: Type{
 			auto rCod=r.tryApply(vars,isSquare);
 			assert(lCod&&rCod);
 			auto ncod=combineTypes(lCod,rCod,meet);
-			return productTy(isConst,names,ndom,ncod,isSquare,isTuple,nannotation,nisClassical);
+			static if(language==dp) return productTy(isConst,names,ndom,ncod,isSquare,isTuple,
+				nannotation,nisClassical, isParameterized, isInitialized, combinationIsDifferentiable);
+			else return productTy(isConst,names,ndom,ncod,isSquare,isTuple,nannotation,nisClassical);
 		}else{
 			auto name=names[0]==r.names[0]?names[0]:freshName("x",r);
 			auto var=varTy(name,ndom);
@@ -1428,7 +1493,10 @@ class ProductTy: Type{
 			auto rCod=r.tryApply(var,isSquare);
 			assert(lCod&&rCod);
 			auto ncod=combineTypes(lCod,rCod,meet);
-			return productTy(isConst,names,ndom,ncod,isSquare,isTuple,nannotation,nisClassical);
+			static if(language==dp) return productTy(isConst,names,ndom,ncod,isSquare,isTuple,
+				nannotation,nisClassical,isParameterized, isInitialized, combinationIsDifferentiable);
+			else return productTy(isConst,names,ndom,ncod,isSquare,isTuple,
+				nannotation,nisClassical);
 		}
 	}
 	private ProductTy setTuple(bool tuple)in{
@@ -1451,7 +1519,10 @@ class ProductTy: Type{
 			nIsConst=[isConst2.empty?true:isConst2.front];
 		}
 		foreach(i,ref nn;nnames) while(hasFreeVar(nn)) nn~="'";
-		return productTy(nIsConst,nnames,dom,cod,isSquare,tuple,annotation,isClassical_);
+		static if(language==dp) return productTy(nIsConst,nnames,dom,cod,isSquare,tuple,
+			annotation,isClassical_, isParameterized, isInitialized, isDifferentiable);
+		else return productTy(nIsConst,nnames,dom,cod,isSquare,tuple,
+			annotation,isClassical_);
 	}
 	override bool isClassical(){
 		return isClassical_;
@@ -1470,22 +1541,61 @@ class ProductTy: Type{
 		assert(ntype.isTypeTy);
 		auto ndom=dom.eval(),ncod=cod.eval();
 		if(ndom==dom&&ncod==cod) return this;
-		return productTy(isConst,names,ndom,ncod,isSquare,isTuple,annotation,isClassical_);
+		static if(language==dp) return productTy(isConst,names,ndom,ncod,isSquare,isTuple,
+			annotation,isClassical_, isParameterized, isInitialized, isDifferentiable);
+		else return productTy(isConst,names,ndom,ncod,isSquare,isTuple,annotation,isClassical_);
 	}
 }
 
-ProductTy productTy(bool[] isConst,string[] names,Expression dom,Expression cod,bool isSquare,bool isTuple,Annotation annotation,bool isClassical)in{
+static if (language==dp) {
+	ProductTy productTy(bool[] isConst,string[] names,
+						Expression dom,Expression cod,
+						bool isSquare,bool isTuple,
+						Annotation annotation,bool isClassical,
+						bool isParameterized=false, bool isInitialized=false, bool isDifferentiable=false)in{
+		assert(dom&&cod);
+		if(isTuple){
+			auto tdom=dom.isTupleTy();
+			assert(tdom&&names.length==tdom.length&&isConst.length==tdom.length);
+		}else assert(names.length==1&&isConst.length==1);
+	}body{
+		return memoize!((bool[] isConst,string[] names,
+						 Expression dom,Expression cod,
+						 bool isSquare,bool isTuple,
+						 Annotation annotation,bool isClassical,
+						 bool isParameterized, bool isInitialized, bool isDifferentiable)
+			=>new ProductTy(isConst,names,dom,cod,isSquare,isTuple,annotation,isClassical, isParameterized, isInitialized, isDifferentiable))
+				(isConst,names,dom,cod,isSquare,isTuple,annotation,isClassical, isParameterized, isInitialized, isDifferentiable);
+	}
+} else {
+	ProductTy productTy(bool[] isConst,string[] names,Expression dom,Expression cod,bool isSquare,bool isTuple,Annotation annotation,bool isClassical)in{
+		assert(dom&&cod);
+		if(isTuple){
+			auto tdom=dom.isTupleTy();
+			assert(tdom&&names.length==tdom.length&&isConst.length==tdom.length);
+		}else assert(names.length==1&&isConst.length==1);
+	}body{
+		return memoize!((bool[] isConst,string[] names,Expression dom,Expression cod,bool isSquare,bool isTuple,Annotation annotation,bool isClassical)=>new ProductTy(isConst,names,dom,cod,isSquare,isTuple,annotation,isClassical))(isConst,names,dom,cod,isSquare,isTuple,annotation,isClassical);
+	}
+}
+
+
+static if (language==dp) {
+	FunTy funTy(bool[] isConst,Expression dom,Expression cod,bool isSquare,bool isTuple,Annotation annotation,bool isClassical,
+		bool isParameterized=false, bool isInitialized=false, bool isDifferentiable=false)in{
 	assert(dom&&cod);
 	if(isTuple){
 		auto tdom=dom.isTupleTy();
-		assert(tdom&&names.length==tdom.length&&isConst.length==tdom.length);
-	}else assert(names.length==1&&isConst.length==1);
+		assert(isConst.length==tdom.length);
+	}else assert(isConst.length==1);
 }body{
-	return memoize!((bool[] isConst,string[] names,Expression dom,Expression cod,bool isSquare,bool isTuple,Annotation annotation,bool isClassical)=>new ProductTy(isConst,names,dom,cod,isSquare,isTuple,annotation,isClassical))(isConst,names,dom,cod,isSquare,isTuple,annotation,isClassical);
+	auto nargs=1+[].length;
+	if(isTuple) if(auto tpl=dom.isTupleTy()) nargs=tpl.length;
+	return productTy(isConst,iota(nargs).map!(_=>"").array,dom,cod,isSquare,isTuple,annotation,isClassical,
+		isParameterized, isInitialized, isDifferentiable);
 }
-
-alias FunTy=ProductTy;
-FunTy funTy(bool[] isConst,Expression dom,Expression cod,bool isSquare,bool isTuple,Annotation annotation,bool isClassical)in{
+} else {
+	FunTy funTy(bool[] isConst,Expression dom,Expression cod,bool isSquare,bool isTuple,Annotation annotation,bool isClassical)in{
 	assert(dom&&cod);
 	if(isTuple){
 		auto tdom=dom.isTupleTy();
@@ -1496,6 +1606,10 @@ FunTy funTy(bool[] isConst,Expression dom,Expression cod,bool isSquare,bool isTu
 	if(isTuple) if(auto tpl=dom.isTupleTy()) nargs=tpl.length;
 	return productTy(isConst,iota(nargs).map!(_=>"").array,dom,cod,isSquare,isTuple,annotation,isClassical);
 }
+}
+
+
+alias FunTy=ProductTy;
 
 FunTy funTy(Expression dom,Expression cod,bool isSquare,bool isTuple,Annotation annotation,bool isClassical)in{
 	assert(dom&&cod);
