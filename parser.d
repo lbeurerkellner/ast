@@ -51,6 +51,7 @@ int getLbp(TokenType type) pure{ // operator precedence
 	case Tok!"*←",Tok!"·←",Tok!"%←",Tok!"^←":
 	case Tok!"&&=", Tok!"||=", Tok!"~=":
 	case Tok!"&&←", Tok!"||←", Tok!"~←":
+	case Tok!"?=":
 	case Tok!":=":
 		return 20;
 	case Tok!":",Tok!"as",Tok!"coerce": // type annotation, safe type conversion, unsafe type conversion

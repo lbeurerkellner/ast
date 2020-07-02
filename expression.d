@@ -1563,7 +1563,7 @@ class ParamDefExp: Expression {
 	Expression defineExp;
 	Expression context;
 
-	this(Expression defineExp, Expression context, Expression defExp = null) {
+	this(Expression defineExp, Expression context) {
 		this.defineExp = defineExp;
 		this.context = context;
 	}

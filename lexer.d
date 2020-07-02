@@ -106,7 +106,8 @@ string[2][] simpleTokens =
 	 ["^",     "Pow"                       ],
 	 ["^=",    "PowEqual"                  ],
 	 ["~",     "Concat"                    ],
-	 ["~=",    "ConcatEqual"              ]];
+	 ["~=",    "ConcatEqual"               ],
+	 ["?=",     "QuestionMarkEqual"       ]];
 string[2][] unicodeTokens =
 	[["·",     "Multiply2"                 ],
 	 ["·=",    "MultiplyEqual2"            ],

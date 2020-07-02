@@ -1852,7 +1852,7 @@ class ParameterSetTy : Type {
 		return new ParameterSetTy(target.copy(), sc);
 	}
 	override string toString(){
-		return "params[" ~ target.toString ~ "]";
+		return "ϑ[" ~ target.toString ~ "]";
 	}
 	override bool opEquals(Object o){
 		auto otherParamSetTy = cast(ParameterSetTy)o;
@@ -1944,6 +1944,10 @@ class ParameterSetTy : Type {
 ParameterSetTy parameterSetTy(Expression target, Scope sc){
 	return memoize!((Expression target, Scope sc)=>new ParameterSetTy(target, sc))(target, sc);
 }
+ParameterSetTy parameterSetTopTy(Scope sc){
+	return parameterSetTy(anyTy, sc);
+}
+
 class TangentVectorTy : Type {
 	// TangentVectorTy can be value-bound (a.tangentVector, bound is value expression) or 
 	// type-bound (ℝ.tangentVector, bound is type expression)

@@ -51,6 +51,7 @@ static if(language==dp) {
 	alias NonDiffTypeExp=UnaryExp!(Tok!"nondiff");
 	alias NoParamTypeExp=UnaryExp!(Tok!"noparam");
 	alias GradExp=UnaryExp!(Tok!"grad");
+	alias DefineIfFreshExp=BinaryExp!(Tok!"?=");
 }
 
 alias Exp=Expression;
@@ -549,9 +550,14 @@ Expression builtIn(Identifier id,Scope sc){
 		id.type=typeTy();
 		if(id.name=="string") return stringTy(true);
 		if (id.name=="any") return anyTy(true);
-	static if(language==dp) case "manifold": {
+	static if(language==dp) 
+	case "manifold": {
 		id.type=typeTy;
 		return manifoldTypeTy();
+	}
+	case "ϑ", "params": {
+		id.type=typeTy;
+		return parameterSetTopTy(sc);
 	}
 	default: return null;
 	}
@@ -863,6 +869,23 @@ Expression statementSemantic(Expression e,Scope sc)in{
 	static if (language==dp) {
 		if (auto paramExp=cast(ParamDefExp)e){
 			return paramDefSemantic(paramExp, sc);
+		}
+		if (auto defineIfFreshExp=cast(DefineIfFreshExp)e) {
+			defineIfFreshExp.e1 = expressionSemantic(defineIfFreshExp.e1, sc, ConstResult.yes);
+			defineIfFreshExp.e2 = expressionSemantic(defineIfFreshExp.e2, sc, ConstResult.yes);
+			// validate lhs
+			auto indexLhs = cast(IndexExp)defineIfFreshExp.e1;
+			if (!indexLhs) {
+				sc.error("the operator ?= can only be used with an index access expression on the left-hand side",defineIfFreshExp.loc);
+				defineIfFreshExp.sstate=SemState.error;
+				return defineIfFreshExp;
+			}
+			if (!isSubtype(indexLhs.e.type, parameterSetTopTy(sc))) {
+				sc.error(format("the operator ?= can only be applied to index expressions on expressions of type %s, not %s", parameterSetTopTy(sc).toString, indexLhs.e.type.toString),defineIfFreshExp.loc);
+				defineIfFreshExp.sstate=SemState.error;
+				return defineIfFreshExp;
+			}
+			return defineIfFreshExp;
 		}
 	}
 
@@ -1677,6 +1700,18 @@ Expression callSemantic(CallExp ce,Scope sc,ConstResult constResult){
 		}
 		return ce;
 	}
+	static if(language==dp) {
+		// allow parameter set constructor calls
+		if (auto paramTy = cast(ParameterSetTy)ce.e) {
+			ce.type=paramTy;
+			if (paramTy != parameterSetTopTy(sc)) {
+				sc.error(text("can only explicitly construct instances of ", parameterSetTopTy(sc)), ce.loc);
+				ce.sstate = SemState.error;
+				return ce;
+			}
+			return ce;
+		}
+	}
 	if(auto ft=cast(FunTy)fun.type){
 		ce=checkFunCall(ft);
 	}else if(auto at=isDataTyId(fun)){
@@ -1749,7 +1784,7 @@ Expression callSemantic(CallExp ce,Scope sc,ConstResult constResult){
 			}
 			default: assert(0,text("TODO: ",id.name));
 		}
-	}else{
+	} else{
 		sc.error(format("cannot call expression of type %s: %s",fun.type,fun),ce.loc);
 		ce.sstate=SemState.error;
 	}
@@ -2191,6 +2226,10 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 				}
 				return expr=tangentVectorTy(arg, sc);
 			}
+		}
+		// handle parameter set type expressions
+		if (auto paramTy = cast(ParameterSetTy) idx.e) {
+			return expr=parameterSetTyIndexSemantic(idx, paramTy, idx.a, sc);
 		}
 		// handle parameter set indexing
 		if (auto paramTy = cast(ParameterSetTy) idx.e.type) {
@@ -3060,6 +3099,64 @@ Type typeOrDataType(Expression e) {
 		return aggrTy;
 	}
 	return null;
+}
+
+static if (language==dp) Expression parameterSetTyIndexSemantic(IndexExp idx, ParameterSetTy paramTy, Expression[] args, Scope sc) {
+	bool isValidBoundType(Expression bound) {
+		// can only specialize param types using record types
+		return (cast(AggregateTy)typeOrDataType(bound)) !is null;
+	}
+	bool isValidBoundValue(Expression bound) {
+		// can only specialize param types using records or references to initialized functions
+		auto type = bound.type;
+		if (auto ftype=cast(FunTy)type) {
+			return ftype.isParameterized&&ftype.isInitialized;
+		} else {
+			return isValidBoundType(type);
+		}
+	}
+	if (args.length != 1) {
+		sc.error("parameter set types can only be specialized using a single type argument", idx.loc);
+		idx.sstate = SemState.error;
+		return idx;
+	}
+	if (paramTy.isValueBound) {
+		sc.error(text("cannot specialize value-bound parameter set type ", paramTy, " any further"), idx.loc);
+		idx.sstate = SemState.error;
+		return idx;
+	}
+	auto typeBound = paramTy.target;
+	auto newBound = expressionSemantic(args[0],sc,ConstResult.yes);
+	// ignore errorneous index expressions 
+	if (newBound.sstate==SemState.error) {
+		return paramTy;
+	}
+	if (newBound.type.isTypeTy) { // new bound is type bound
+		if (!isValidBoundType(newBound)) {
+			sc.error(text("parameter set type ", paramTy, " can only be specialized using record types, initialized functions or records, not ", newBound), idx.loc);
+			idx.sstate = SemState.error;
+			return idx;
+		}
+		if (!isSubtype(newBound, typeBound)) {
+			sc.error(text("parameter set type ", paramTy, " cannot be specialized with incompatible type ", newBound), idx.loc);
+			idx.sstate = SemState.error;
+			return idx;
+		}
+		return parameterSetTy(newBound, paramTy.sc);
+	} else { // new bound is value bound
+		if (!isValidBoundValue(newBound)) {
+			sc.error(text("parameter set type ", paramTy, " can only be specialized using record types, initialized functions or records, not ", newBound), idx.loc);
+			idx.sstate = SemState.error;
+			return idx;
+		}
+		if (!isSubtype(newBound.type, typeBound)) {
+			sc.error(text("parameter set type ", paramTy, " can only be specialized by expressions of type ", typeBound, ", not ", newBound.type), idx.loc);
+			idx.sstate = SemState.error;
+			return idx;
+		}
+		return parameterSetTy(newBound, paramTy.sc);
+	}
+	return idx;
 }
 
 static if (language==dp) Expression parameterSetIndexSemantic(IndexExp idx, Expression[] args, Scope sc) {
