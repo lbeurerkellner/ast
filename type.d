@@ -1852,6 +1852,7 @@ class ParameterSetTy : Type {
 		return new ParameterSetTy(target.copy(), sc);
 	}
 	override string toString(){
+		if (target==anyTy) return "ϑ";
 		return "ϑ[" ~ target.toString ~ "]";
 	}
 	override bool opEquals(Object o){
@@ -2130,4 +2131,37 @@ TangentVectorTy tangentVectorTy(Expression target, Scope sc) {
 		if (auto paramTy=cast(ParameterSetTy)target.type) return new ParameterSetTangentVectorTy(target, sc);
 		return new TangentVectorTy(target, sc);
 	})(target, sc);
+}
+
+/// unsafe dynamic type which can be cast to any other type and otherwise behaves like anyTy
+class DynamicTy : AnyTy {
+	private this(bool classical){
+		super(classical);
+	}
+	override DynamicTy copyImpl(CopyArgs args){
+		return this;
+	}
+	override string toString(){
+		static if(language==silq) return classical?"!dynamic":"dynamic";
+		else return "dynamic";
+	}
+	override bool opEquals(Object o){
+		return !!cast(DynamicTy)o;
+	}
+	override bool isClassical(){
+		return classical;
+	}
+	override bool hasClassicalComponent(){
+		return true;
+	}
+	override Expression evalImpl(Expression ntype){ return this; }
+	mixin VariableFree;
+	override int componentsImpl(scope int delegate(Expression) dg){
+		return 0;
+	}
+}
+
+DynamicTy dynamicTy(bool classical=true){
+	static if(language==silq) return memoize!((bool classical)=>new DynamicTy(classical))(classical);
+	else return memoize!(()=>new DynamicTy(true));
 }

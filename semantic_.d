@@ -2440,6 +2440,7 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 			}
 		bool typeExplicitConversion(Expression from,Expression to,TypeAnnotationType annotationType){
 			if(isSubtype(from,to)) return true;
+			if(from==dynamicTy) return true;
 			if(annotationType>=annotationType.conversion){
 				if(isSubtype(from,ℤt(true))&&(isUint(to)||isInt(to)))
 					return true;
@@ -3170,34 +3171,18 @@ static if (language==dp) Expression parameterSetIndexSemantic(IndexExp idx, Expr
 		idx.sstate = SemState.error;
 		return idx;
 	}
-	// determine parameter declaration from first index arguments
-	auto paramRef = args[0];
-	VarDecl paramDecl;
-	if (auto decl=cast(VarDecl)paramRef) {
-		paramDecl=decl;
-	} else {
-		paramRef=expressionSemantic(paramRef, sc, ConstResult.yes);
-		if (auto ident=cast(Identifier)paramRef) {
-			auto meaning=cast(VarDecl)ident.meaning;
-			if (!meaning) {
-				sc.error("non-variable parameters are not supported at this point", paramRef.loc);
-				idx.sstate = SemState.error;
-				return idx;
-			}
-			paramDecl=meaning;
-		} else {	
-			sc.error(format("not a supported parameter expression: %s", paramRef.toString), paramRef.loc);
-			idx.sstate = SemState.error;
-			return idx;
-		}
+	// determine parameter name from first index argument
+	auto paramRefExpression = expressionSemantic(args[0], sc, ConstResult.yes);
+	if (!isSubtype(paramRefExpression.type, stringTy)) {
+		sc.error(text("parameters in parameter sets must always be addressed by strings, not ", paramRefExpression.type), paramRefExpression.loc);
+		idx.sstate = SemState.error;
+		return idx;
 	}
-	// make sure first index argument always points to the parameter declaration
-	// idx.a[0] = paramDecl;
 
+	Expression context=null;
 	// if provided, handle parameter context expression
 	if (args.length == 2) {
-		auto context = args[1];
-		context=expressionSemantic(context,sc,ConstResult.yes);
+		context=expressionSemantic(args[1],sc,ConstResult.yes);
 		if (!(isSubtype(context.type, ℕt) || isSubtype(context.type, stringTy))) {
 			sc.error(format("parameter context must be a natural number or string not %s", context.type.toString()),context.loc);
 			context.sstate=SemState.error;
@@ -3205,7 +3190,7 @@ static if (language==dp) Expression parameterSetIndexSemantic(IndexExp idx, Expr
 		}
 	}
 
-	return new ParameterSetIndexExp(idx.e, idx.a, paramDecl);
+	return new ParameterSetIndexExp(idx.e, idx.a, paramRefExpression, context);
 }
 
 static if (language==dp) Expression manifoldMemberSemantic(Expression target, string memberName, Scope sc) {

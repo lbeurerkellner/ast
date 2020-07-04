@@ -1747,12 +1747,15 @@ class UntapeExp: Expression{
 }
 
 class ParameterSetIndexExp: IndexExp {
-	VarDecl parameterDecl;
+	Expression parameter;
+	Expression context;
 
-	this(Expression exp, Expression[] args, VarDecl parameterDecl){
+	this(Expression exp, Expression[] args, Expression parameter, Expression context){
 		super(exp, args, false);
 		
-		this.parameterDecl = parameterDecl;
-		this.type = parameterDecl.vtype;
+		this.parameter = parameter;
+		this.context = context;
+
+		this.type = dynamicTy;
 	}
 }
