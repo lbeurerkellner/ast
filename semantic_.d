@@ -2271,7 +2271,7 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 				}
 			}
 		}
-		Expression indexedTyped = unalias(idx.e.type);
+		Expression indexedTyped = unalias(idx.e.type).eval();
 		if(auto at=cast(ArrayTy)indexedTyped){
 			check(at.next);
 		}else if(auto vt=cast(VectorTy)indexedTyped){
@@ -3240,6 +3240,9 @@ static if (language==dp) Expression manifoldMemberSemantic(Expression target, st
 	if (auto targetType=typeOrDataType(target.type)) {
 		// check for type-level access (e.g. ℝ.tangentVector)
 		if (targetType.isTypeTy) {
+			// type-level access only exposes the .tangentVector member
+			if (memberName!="tangentVector") return null;
+
 			// check for recursive access (e.g. ℝ.tangentVector in manifold declaration for ℝ)
 			if (auto res=resolveLocally(target, target, memberName)) {
 				return res;
