@@ -285,6 +285,8 @@ Expression presemantic(Declaration expr,Scope sc){
 				fsc.allowMerge=true;
 				assert(fd.context.getName!=fd.contextVal.getName);
 			}
+			// member functions cannot be parameterized
+			fd.isParameterized=false;
 			assert(dsc.decl.dtype);
 		}else if(auto nsc=cast(NestedScope)sc){
 			fd.contextVal=addVar("`outer",contextTy(true),fd.loc,fsc); // TODO: replace contextTy by suitable record type; make name 'outer' available
@@ -437,7 +439,12 @@ Expression makeDeclaration(Expression expr,ref bool success,Scope sc, bool isPar
 	if (auto paramExp=cast(ParamDefExp)expr){
 		auto defineExp = cast(DefineExp)paramExp.defineExp;
 		assert(defineExp);
-		return makeDeclaration(defineExp.e1, success, sc, true);
+		auto paramDecl = makeDeclaration(defineExp.e1, success, sc, true);
+		
+		auto paramDeclAsVarDecl = cast(VarDecl)paramDecl;
+		assert(paramDeclAsVarDecl, text("parameter definition of unsupported kind ", typeid(paramDecl)));
+		paramDeclAsVarDecl.isParamDefinition = true;
+		return paramDeclAsVarDecl;
 	}
 	if (auto fieldDeclExp = cast(DefExp)expr) {
 		return fieldDeclExp;
@@ -873,6 +880,7 @@ Expression statementSemantic(Expression e,Scope sc)in{
 		if (auto defineIfFreshExp=cast(DefineIfFreshExp)e) {
 			defineIfFreshExp.e1 = expressionSemantic(defineIfFreshExp.e1, sc, ConstResult.yes);
 			defineIfFreshExp.e2 = expressionSemantic(defineIfFreshExp.e2, sc, ConstResult.yes);
+			defineIfFreshExp.type = defineIfFreshExp.e2.type;
 			// validate lhs
 			auto indexLhs = cast(IndexExp)defineIfFreshExp.e1;
 			if (!indexLhs) {
@@ -880,7 +888,8 @@ Expression statementSemantic(Expression e,Scope sc)in{
 				defineIfFreshExp.sstate=SemState.error;
 				return defineIfFreshExp;
 			}
-			if (!isSubtype(indexLhs.e.type, parameterSetTopTy(sc))) {
+			if (!isSubtype(indexLhs.e.type, parameterSetTopTy(sc))&&
+			    !isSubtype(indexLhs.e.type, tangentVectorTy(parameterSetTopTy(sc), sc))) {
 				sc.error(format("the operator ?= can only be applied to index expressions on expressions of type %s, not %s", parameterSetTopTy(sc).toString, indexLhs.e.type.toString),defineIfFreshExp.loc);
 				defineIfFreshExp.sstate=SemState.error;
 				return defineIfFreshExp;
@@ -895,7 +904,16 @@ Expression statementSemantic(Expression e,Scope sc)in{
 }
 
 ParamDefExp paramDefSemantic(ParamDefExp paramExp, Scope sc) {
-	paramExp.defineExp = statementSemantic(paramExp.defineExp, sc);
+	auto singleDef = cast(SingleDefExp)statementSemantic(paramExp.defineExp, sc);
+	if (!singleDef) {
+		sc.error("parameter definition of unsupported kind", paramExp.loc);
+		paramExp.sstate=SemState.error;
+		return paramExp;
+	}
+	paramExp.defineExp = singleDef;
+	// mark underlying VarDecl as parameter definition
+	singleDef.decl.isParamDefinition = true;
+
 	paramExp.context = paramExp.context?expressionSemantic(paramExp.context,sc,ConstResult.yes):null;
 
 	if (paramExp.context !is null) {
@@ -1297,6 +1315,8 @@ AssignExp assignExpSemantic(AssignExp ae,Scope sc){
 				checkLhs(exp);
 		}else if(auto idx=cast(IndexExp)lhs){
 			checkLhs(idx.e);
+		}else if(auto sliceExp=cast(SliceExp)lhs){
+			checkLhs(sliceExp.e);
 		}else if(auto fe=cast(FieldExp)lhs){
 			checkLhs(fe.e);
 		}else if(auto tae=cast(TypeAnnotationExp)lhs){
@@ -2239,6 +2259,8 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 			if (auto paramTy = cast(ParameterSetTy) tvTy.bound) {
 				return expr=parameterSetIndexSemantic(idx, idx.a, sc);
 			} else if (auto parameterSetHandleXp = cast(ParameterSetHandleExp) tvTy.bound) {
+				return expr=parameterSetIndexSemantic(idx, idx.a, sc);
+			} else if (auto parameterSetValue = cast(ParameterSetTy) tvTy.bound.type) {
 				return expr=parameterSetIndexSemantic(idx, idx.a, sc);
 			}
 		}
@@ -3190,7 +3212,7 @@ static if (language==dp) Expression parameterSetIndexSemantic(IndexExp idx, Expr
 		}
 	}
 
-	return new ParameterSetIndexExp(idx.e, idx.a, paramRefExpression, context);
+	return new ParameterSetIndexExp(idx.e, paramRefExpression, context);
 }
 
 static if (language==dp) Expression manifoldMemberSemantic(Expression target, string memberName, Scope sc) {
@@ -3451,6 +3473,12 @@ FunctionDef functionDefSemantic(FunctionDef fd,Scope sc){
 		vars[n]=[];
 	}
 	static if(language==dp) {
+		if (fd.name&&fd.name.name=="main") {
+			if (fd.isParameterized) {
+				sc.error("the main function cannot be parameterized (annotate as noparam def main)", fd.loc);
+				return fd;
+			}
+		}
 		if (fd.isPullback) {
 			fd=pullbackSemantic(fd, sc);
 		}
@@ -4278,7 +4306,7 @@ static if(language==dp) ProductTy pullbackTy(string name, ProductTy ftype, Scope
 	
 	// TODO: consider what happens to .isParameterize, .isInitialized here
 	auto pullbackOpTy = productTy([true], pullbackParamNames, pullbackDom, pullbackCod, false, false, 
-								  Annotation.none, true, false, false, false);
+								  Annotation.none, true, false, false, false, ftype);
 	return productTy(ftype.isConst, pullbackSquareParamNames, pullbackSquareDom, pullbackOpTy, 
 		true, squareDomIsTuple, Annotation.none, true, false, false, false);
 }

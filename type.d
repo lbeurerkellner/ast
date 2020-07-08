@@ -1059,6 +1059,21 @@ class StringTy: Type{
 	override int componentsImpl(scope int delegate(Expression) dg){
 		return 0;
 	}
+	override bool supportsBinaryOperatorImpl(string op, Expression operandType) {
+		if (op=="+") {
+			return isSubtype(operandType, stringTy) || isSubtype(operandType, ℝ(true));
+		}
+		return false;
+	}
+
+	override Expression combineTypesImpl(Expression rhs, bool meet) {
+		if (cast(StringTy)rhs !is null) {
+			return this;
+		} else if (isSubtype(rhs, ℝ(true))) {
+			return this;
+		}
+		return super.combineTypesImpl(rhs, meet);
+	}
 }
 
 StringTy stringTy(bool classical=true){
@@ -1128,6 +1143,7 @@ class ProductTy: Type{
 		bool isParameterized=false;
 		bool isInitialized=false;
 		bool isDifferentiable=false;
+		ProductTy isPullbackOf=null;
 	}
 
 	static if(language==dp) {
@@ -1135,7 +1151,8 @@ class ProductTy: Type{
 				 Expression dom,Expression cod,
 				 bool isSquare,bool isTuple,
 				 Annotation annotation,bool isClassical_,
-				 bool isParameterized, bool isInitialized, bool isDifferentiable)in{
+				 bool isParameterized, bool isInitialized, bool isDifferentiable,
+				 ProductTy primalTy)in{
 			// TODO: assert that all names are distinct
 			if(isTuple){
 				auto tdom=dom.isTupleTy;
@@ -1160,7 +1177,7 @@ class ProductTy: Type{
 			this.isParameterized=isParameterized;
 			this.isInitialized=isInitialized;
 			this.isDifferentiable=isDifferentiable;
-
+			this.isPullbackOf=primalTy;
 			// TODO: report DMD bug, New!ProductTy does not work
 		}
 	} else {
@@ -1278,7 +1295,7 @@ class ProductTy: Type{
 		nnames[i]=nname;
 		auto nvar=varTy(nname,argTy(i));
 		static if (language==dp) return productTy(isConst,nnames,dom,cod.substitute(oname,nvar),isSquare,isTuple,
-						 annotation,isClassical_, isParameterized, isInitialized, isDifferentiable);
+						 annotation,isClassical_, isParameterized, isInitialized, isDifferentiable, isPullbackOf);
 		else return productTy(isConst,nnames,dom,cod.substitute(oname,nvar),isSquare,isTuple,annotation,isClassical_);
 	}
 	private ProductTy relabelAway(string oname)in{
@@ -1309,7 +1326,7 @@ class ProductTy: Type{
 		Expression[string] subst;
 		foreach(i;0..names.length) subst[names[i]]=varTy(nnames[i],argTy(i));
 		static if(language==dp) return productTy(isConst,nnames,dom,cod.substitute(subst),isSquare,isTuple,
-						 annotation,isClassical_,isParameterized,isInitialized,isDifferentiable);
+						 annotation,isClassical_,isParameterized,isInitialized,isDifferentiable,isPullbackOf);
 		else return productTy(isConst,nnames,dom,cod.substitute(subst),isSquare,isTuple,annotation,isClassical_);
 	}
 	override ProductTy substituteImpl(Expression[string] subst){
@@ -1340,7 +1357,7 @@ class ProductTy: Type{
 				nIsConst=[true];
 		}
 		static if (language==dp) return productTy(nIsConst,names,ndom,ncod,isSquare,isTuple,
-						 annotation,isClassical_, isParameterized, isInitialized, isDifferentiable);
+						 annotation,isClassical_, isParameterized, isInitialized, isDifferentiable, isPullbackOf);
 		else return productTy(nIsConst,names,ndom,ncod,isSquare,isTuple,annotation,isClassical_);
 	}
 	override bool unifyImpl(Expression rhs,ref Expression[string] subst,bool meet){
@@ -1484,7 +1501,7 @@ class ProductTy: Type{
 			assert(lCod&&rCod);
 			auto ncod=combineTypes(lCod,rCod,meet);
 			static if(language==dp) return productTy(isConst,names,ndom,ncod,isSquare,isTuple,
-				nannotation,nisClassical, isParameterized, isInitialized, combinationIsDifferentiable);
+				nannotation,nisClassical, isParameterized, isInitialized, combinationIsDifferentiable, isPullbackOf);
 			else return productTy(isConst,names,ndom,ncod,isSquare,isTuple,nannotation,nisClassical);
 		}else{
 			auto name=names[0]==r.names[0]?names[0]:freshName("x",r);
@@ -1494,7 +1511,7 @@ class ProductTy: Type{
 			assert(lCod&&rCod);
 			auto ncod=combineTypes(lCod,rCod,meet);
 			static if(language==dp) return productTy(isConst,names,ndom,ncod,isSquare,isTuple,
-				nannotation,nisClassical,isParameterized, isInitialized, combinationIsDifferentiable);
+				nannotation,nisClassical,isParameterized, isInitialized, combinationIsDifferentiable, isPullbackOf);
 			else return productTy(isConst,names,ndom,ncod,isSquare,isTuple,
 				nannotation,nisClassical);
 		}
@@ -1520,7 +1537,7 @@ class ProductTy: Type{
 		}
 		foreach(i,ref nn;nnames) while(hasFreeVar(nn)) nn~="'";
 		static if(language==dp) return productTy(nIsConst,nnames,dom,cod,isSquare,tuple,
-			annotation,isClassical_, isParameterized, isInitialized, isDifferentiable);
+			annotation,isClassical_, isParameterized, isInitialized, isDifferentiable, isPullbackOf);
 		else return productTy(nIsConst,nnames,dom,cod,isSquare,tuple,
 			annotation,isClassical_);
 	}
@@ -1542,7 +1559,7 @@ class ProductTy: Type{
 		auto ndom=dom.eval(),ncod=cod.eval();
 		if(ndom==dom&&ncod==cod) return this;
 		static if(language==dp) return productTy(isConst,names,ndom,ncod,isSquare,isTuple,
-			annotation,isClassical_, isParameterized, isInitialized, isDifferentiable);
+			annotation,isClassical_, isParameterized, isInitialized, isDifferentiable, isPullbackOf);
 		else return productTy(isConst,names,ndom,ncod,isSquare,isTuple,annotation,isClassical_);
 	}
 }
@@ -1552,7 +1569,8 @@ static if (language==dp) {
 						Expression dom,Expression cod,
 						bool isSquare,bool isTuple,
 						Annotation annotation,bool isClassical,
-						bool isParameterized=false, bool isInitialized=false, bool isDifferentiable=false)in{
+						bool isParameterized=false, bool isInitialized=false, bool isDifferentiable=false,
+						ProductTy primalTy=null)in{
 		assert(dom&&cod);
 		if(isTuple){
 			auto tdom=dom.isTupleTy();
@@ -1563,9 +1581,9 @@ static if (language==dp) {
 						 Expression dom,Expression cod,
 						 bool isSquare,bool isTuple,
 						 Annotation annotation,bool isClassical,
-						 bool isParameterized, bool isInitialized, bool isDifferentiable)
-			=>new ProductTy(isConst,names,dom,cod,isSquare,isTuple,annotation,isClassical, isParameterized, isInitialized, isDifferentiable))
-				(isConst,names,dom,cod,isSquare,isTuple,annotation,isClassical, isParameterized, isInitialized, isDifferentiable);
+						 bool isParameterized, bool isInitialized, bool isDifferentiable, ProductTy primalTy)
+			=>new ProductTy(isConst,names,dom,cod,isSquare,isTuple,annotation,isClassical, isParameterized, isInitialized, isDifferentiable, primalTy))
+				(isConst,names,dom,cod,isSquare,isTuple,annotation,isClassical, isParameterized, isInitialized, isDifferentiable, primalTy);
 	}
 } else {
 	ProductTy productTy(bool[] isConst,string[] names,Expression dom,Expression cod,bool isSquare,bool isTuple,Annotation annotation,bool isClassical)in{

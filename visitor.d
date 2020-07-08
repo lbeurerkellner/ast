@@ -113,6 +113,9 @@ abstract class AstVisitor(T) {
     T handlePullExp(PullExp pullExp) {
         return handleUnsupportedExp(pullExp);
     }
+    T handleSliceExp(SliceExp sliceExp) {
+        return handleUnsupportedExp(sliceExp);
+    }
 
     T visit(Expression expr) {
         if (expr is null) { 
@@ -180,6 +183,8 @@ abstract class AstVisitor(T) {
             return this.handleParameterSetHandleExp(parameterSetHandleExp);
         } else if (auto pullExp = cast(PullExp)expr) {
             return this.handlePullExp(pullExp);
+        } else if (auto sliceExp = cast(SliceExp)expr) {
+            return this.handleSliceExp(sliceExp);
         } else {
             return this.handleUnsupportedExp(expr);
         }

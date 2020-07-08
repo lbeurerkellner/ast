@@ -171,9 +171,9 @@ abstract class Expression: Node{
 		return null;
 	}
 
-	/// override this to support the binary operator 'op' with the given operand expression
+	/// override this to support the binary operator 'op' with the given operand type
 	/// when returning true here, combineTypesImpl must handle 'operand' correspondingly
-	bool supportsBinaryOperatorImpl(string op, Expression operand){
+	bool supportsBinaryOperatorImpl(string op, Expression operandType){
 		return false;
 	}
 
@@ -229,6 +229,7 @@ class TypeAnnotationExp: Expression{
 	this(Expression e, Expression t, TypeAnnotationType annotationType){
 		this.e=e; this.t=t;
 		this.annotationType=annotationType;
+		assert(this.t);
 	}
 	override TypeAnnotationExp copyImpl(CopyArgs args){
 		return new TypeAnnotationExp(e.copy(args),t.copy(args),annotationType);
@@ -236,7 +237,8 @@ class TypeAnnotationExp: Expression{
 	override @property string kind(){ return e.kind; }
 	override string toString(){
 		static immutable op=[": "," as "," coerce "];
-		return _brk(e.toString()~op[annotationType]~(type?type.toString():t.toString()));
+		return _brk(e.toString()~op[annotationType]~(type?type.toString():
+			 t?t.toString():"null"));
 	}
 	override bool isConstant(){
 		return e.isConstant();
@@ -1750,8 +1752,8 @@ class ParameterSetIndexExp: IndexExp {
 	Expression parameter;
 	Expression context;
 
-	this(Expression exp, Expression[] args, Expression parameter, Expression context){
-		super(exp, args, false);
+	this(Expression e, Expression parameter, Expression context){
+		super(e, context is null ? [parameter] : [parameter, context], false);
 		
 		this.parameter = parameter;
 		this.context = context;
