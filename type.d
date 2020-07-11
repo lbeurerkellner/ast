@@ -1247,7 +1247,7 @@ class ProductTy: Type{
 			}else d=addp(isConst[0],dom,del);
 			static if(language==dp) {
 				if (!isDifferentiable) d = "nondiff " ~ d;
-				d = (isParameterized&&!isInitialized ? "param" : "noparam") ~ " " ~ d;
+				d = (isParameterized ? "param" : "noparam") ~ " " ~ d;
 			}
 			static if(language==silq) auto arrow=(isClassical?"!":"")~"→";
 			else enum arrow="→";
@@ -1887,7 +1887,7 @@ class ParameterSetTy : Type {
 		return true;
 	}
 	override Expression evalImpl(Expression ntype){ 
-		return new ParameterSetTy(target.eval(), sc); 
+		return parameterSetTy(target.eval(), sc); 
 	}
 	mixin VariableFree;
 	override int componentsImpl(scope int delegate(Expression) dg){
@@ -1895,15 +1895,15 @@ class ParameterSetTy : Type {
 	}
 
 	override bool supportsBinaryOperatorImpl(string op, Expression operand) {
-		if (op=="+") {
-			return cast(ParameterSetTy)operand !is null;
-		}
+		if (op=="+") return cast(ParameterSetTy)operand !is null;
 		return false;
 	}
 
 	override Expression combineTypesImpl(Expression rawRhs, bool meet) {
 		if (auto rhs = cast(ParameterSetTy)rawRhs) {
-			if (this.isTypeBound&&rhs.isTypeBound) { // combine type bounds
+			// TODO think about this (e.g. in addition all parameter names of lhs are maintained)
+			return this;
+			/*if (this.isTypeBound&&rhs.isTypeBound) { // combine type bounds
 				if (auto combinedBound=this.target.combineTypesImpl(rhs, meet)) {
 					return parameterSetTy(combinedBound, sc);
 				}
@@ -1916,7 +1916,11 @@ class ParameterSetTy : Type {
 						return parameterSetTy(combinedTypeBound, sc);
 					}
 				}
-			}
+			} else if (this.isTypeBound&&rhs.isValueBound) {
+				// lift both bounds to be type-bound
+				auto otherTypeBound = rhs.target.type;
+				return parameterSetTy(combineTypes(this.target, otherTypeBound, meet), sc);
+			}*/
 		}
 		return super.combineTypesImpl(rawRhs, meet);
 	}
@@ -1936,8 +1940,15 @@ class ParameterSetTy : Type {
 		return this == other;
 	}
 
+	override Expression substituteImpl(Expression[string] subst){ 
+		auto targetSubst = target.substitute(subst);
+		return parameterSetTy(targetSubst, sc);
+	}
+
 	override @property bool isManifoldType() { return true; }
 	
+	static ulong ctr = 0;
+
 	override Manifold manifoldImpl(Scope sc) {
 		auto elementSpecificTangentVecTy = tangentVectorTy(new Identifier("this"), sc);
 
@@ -1961,6 +1972,11 @@ class ParameterSetTy : Type {
 }
 
 ParameterSetTy parameterSetTy(Expression target, Scope sc){
+	if (auto initializedFunctionExp = cast(InitializedFunctionExp)target) {
+		auto parameterSetTy = cast(ParameterSetTy) initializedFunctionExp.p.type;
+		assert(parameterSetTy, text("not of parameter set type ", initializedFunctionExp.p.type));
+		return parameterSetTy;
+	}
 	return memoize!((Expression target, Scope sc)=>new ParameterSetTy(target, sc))(target, sc);
 }
 ParameterSetTy parameterSetTopTy(Scope sc){
@@ -2028,9 +2044,10 @@ class TangentVectorTy : Type {
 	override bool hasClassicalComponent(){
 		return true;
 	}
+
 	override Expression evalImpl(Expression ntype){ 
 		TangentVectorTy res = tangentVectorTy(this.bound.eval(), sc);
-		if (auto m = res.manifold()) {				
+		if (auto m = res.manifold()) {
 			if ((cast(TangentVectorTy)m.tangentVecTy) is null) {
 				return unalias(m.tangentVecTy);
 			}
@@ -2041,7 +2058,7 @@ class TangentVectorTy : Type {
 		if (auto aggrty = isDataTyId(res.bound.type)) {
 			return tangentVectorTy(parameterSetTy(res.bound, sc), sc);
 		}
-		return res; 
+		return res;
 	}
 	// mixin VariableFree;
 	override int componentsImpl(scope int delegate(Expression) dg){
@@ -2079,6 +2096,7 @@ class TangentVectorTy : Type {
 		if (auto m = this.manifold()) {			
 			// value-bound: given bound:T, combine T.tangentVector + other
 			// type-bound: given bound=T:*, combine T.tangentVector + other	
+			if (m.tangentVecTy==this) return null;
 			return combineTypes(m.tangentVecTy, r, meet);
 		} else if (auto otherTangentVec = cast(TangentVectorTy)r) {
 			// lift both bounds to type-bound tangent vector types
@@ -2124,9 +2142,21 @@ class ParameterSetTangentVectorTy: TangentVectorTy {
 		}
 		return super.toString();
 	}
+
+	override Expression combineTypesImpl(Expression r,bool meet){
+		if (auto otherParameterSetTangentVectorTy=cast(ParameterSetTangentVectorTy)r) {
+			auto paramTy = cast(ParameterSetTy)bound;
+			auto otherParamTy = cast(ParameterSetTy)otherParameterSetTangentVectorTy.bound;
+			if (paramTy&&otherParamTy) {
+				return tangentVectorTy(combineTypes(paramTy, otherParamTy, meet), sc);
+			}
+		}
+		return super.combineTypesImpl(r, meet);
+	}
 	
 	override bool supportsBinaryOperatorImpl(string op, Expression operand) {
 		if (auto psetTvTy = cast(ParameterSetTangentVectorTy)operand) {
+			if (op=="+") return true;
 			return this.bound.supportsBinaryOperatorImpl(op, psetTvTy.bound);
 		}
 		return super.supportsBinaryOperatorImpl(op, operand);
@@ -2142,7 +2172,7 @@ TangentVectorTy tangentVectorTy(Expression target, Scope sc) {
 		// if target is of value-bound ParameterSetTy, use it as target instead
 		if (paramTy.isValueBound) target = paramTy;
 		// if target is value of ParameterSetTy
-		// else target = parameterSetTy(target, sc);
+		else target = target.type;
 	}
 	return memoize!((Expression target, Scope sc){
 		if (auto paramTy=cast(ParameterSetTy)target) return new ParameterSetTangentVectorTy(paramTy, sc);

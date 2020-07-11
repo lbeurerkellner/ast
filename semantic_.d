@@ -52,6 +52,7 @@ static if(language==dp) {
 	alias NoParamTypeExp=UnaryExp!(Tok!"noparam");
 	alias GradExp=UnaryExp!(Tok!"grad");
 	alias DefineIfFreshExp=BinaryExp!(Tok!"?=");
+	alias UnparamExp=UnaryExp!(Tok!"unparam");
 }
 
 alias Exp=Expression;
@@ -1242,6 +1243,9 @@ Expression permuteSemantic(DefineExp be,Scope sc)in{ // TODO: generalize defineS
 void typeConstBlock(Declaration decl,Expression blocker,Scope sc){
 	if(!isAssignable(decl,sc)) return;
 	if(auto vd=cast(VarDecl)decl){
+		static if(language==dp) {
+			if (cast(ParameterSetTy)vd.vtype) return;
+		}
 		vd.isConst=true;
 		vd.typeConstBlocker=blocker;
 	}
@@ -2930,13 +2934,49 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 		ndt.e = expressionSemantic(ndt.e, sc, ConstResult.yes);
 		ProductTy prodTy = cast(ProductTy)ndt.e;
 		if (!prodTy) {
-			writeln(ndt.e);
 			sc.error("operator nondiff can only be applied to function type expressions", ndt.loc);
 			ndt.sstate = SemState.error;
 			return ndt;
 		}
 		return expr=productTy(prodTy.isConst, prodTy.names, prodTy.dom, prodTy.cod, prodTy.isSquare,
 			prodTy.isTuple, prodTy.annotation, prodTy.isClassical, prodTy.isParameterized, prodTy.isInitialized, false);
+	}
+	if (auto unparamExp=cast(UnparamExp)expr) {
+		unparamExp.e = expressionSemantic(unparamExp.e, sc, ConstResult.yes);
+		ProductTy prodTy = cast(ProductTy)unparamExp.e.type;
+		if (!prodTy) {
+			sc.error(text("operator unparam can only be applied to function expressions, not expressions of type ", 
+				unparamExp.e.type), unparamExp.loc);
+			unparamExp.sstate = SemState.error;
+			return unparamExp;
+		}
+		if (!prodTy.isParameterized) {
+			sc.error(text("operator unparam can only be applied to parameterized function expressions, not ", 
+				prodTy.type), unparamExp.loc);
+			unparamExp.sstate = SemState.error;
+			return unparamExp;
+		}
+		auto unparamProdTy = productTy(prodTy.isConst ~ [true], prodTy.names ~ ["θ"], 
+			tupleTyIfRequired(tupleTyComponents(prodTy.dom) ~ cast(Type[])[parameterSetTopTy(sc)]),
+			prodTy.cod, prodTy.isSquare, true, prodTy.annotation, prodTy.isClassical, false, false, 
+			prodTy.isDifferentiable, prodTy.isPullbackOf
+		);
+		unparamExp.type = unparamProdTy;
+		return unparamExp;
+	}
+	// not exposed in syntax but may be emitted by lowering pass and reappear during AD
+	if (auto initializedFunctionExp=cast(InitializedFunctionExp)expr) {
+		initializedFunctionExp.f = expressionSemantic(initializedFunctionExp.f, sc, constResult);
+		initializedFunctionExp.p = expressionSemantic(initializedFunctionExp.p, sc, constResult);
+		
+		auto prodTy = cast(ProductTy)initializedFunctionExp.f.type;
+		if (!prodTy) return initializedFunctionExp;
+		
+		initializedFunctionExp.type = productTy(prodTy.isConst, prodTy.names, 
+			prodTy.dom, prodTy.cod, prodTy.isSquare, prodTy.isTuple, prodTy.annotation, 
+			prodTy.isClassical, true, true, prodTy.isDifferentiable, prodTy.isPullbackOf
+		);
+		return initializedFunctionExp;
 	}
 	if (auto gradExp=cast(GradExp)expr) {
 		gradExp.e=expressionSemantic(gradExp.e, sc, constResult);
@@ -4169,9 +4209,9 @@ static if(language==dp) Type[] tupleTyComponents(Expression type) {
 	return [typeOrDataType(type)];
 }
 
-static if(language==dp) Expression tupleTyIfRequired(Expression[] types) {
+static if(language==dp) Expression tupleTyIfRequired(T)(T[] types) {
 	if (types.length>1) {
-		return tupleTy(types);
+		return tupleTy(cast(Expression[])types);
 	} else if (types.length==1) {
 		return types[0];
 	} else {

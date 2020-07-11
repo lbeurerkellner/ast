@@ -95,7 +95,7 @@ int getLbp(TokenType type) pure{ // operator precedence
 	case Tok!"(", Tok!"[": // function call and indexing
 		return 160;
 	static if(language==dp) {
-	case Tok!"pull", Tok!"init":
+	case Tok!"pull", Tok!"init", Tok!"unparam":
 		return 161;
 	}
 	case Tok!"noparam", Tok!"nondiff":
@@ -531,6 +531,9 @@ struct Parser{
 				case Tok!"noparam":
 					expect(Tok!"noparam");
 					return res=New!(UnaryExp!(Tok!"noparam"))(parseExpression(lbp!(Tok!"noparam")));
+				case Tok!"unparam":
+					expect(Tok!"unparam");
+					return res=New!(UnaryExp!(Tok!"unparam"))(parseExpression(lbp!(Tok!"unparam")));
 			}
 			case Tok!"__error": mixin(rule!(ErrorExp,"_"));
 			//case Tok!"[": mixin(rule!(ArrayLiteralExp,"_","OPT",ArgumentList,"]"));

@@ -1761,3 +1761,30 @@ class ParameterSetIndexExp: IndexExp {
 		this.type = dynamicTy;
 	}
 }
+
+class InitializedFunctionExp: Expression {
+	/// the function expression
+	Expression f;
+	/// the parameter set expression
+	Expression p;
+	
+	this(Expression f, Expression p){
+		this.f = f;
+		this.p = p;
+	}
+	override InitializedFunctionExp copyImpl(CopyArgs args){
+		return new InitializedFunctionExp(f.copy(args), p.copy(args));
+	}
+	override string toString(){ return _brk("(θ"~p.toString()~"."~f.toString~")"); }
+
+	override string kind() { return "initialized function expression"; }
+
+	override Expression evalImpl(Expression ntype){
+		return new InitializedFunctionExp(f.eval(), p.eval());
+	}
+	mixin VariableFree; // TODO
+	override int componentsImpl(scope int delegate(Expression) dg){
+		foreach(e; [f, p]) if (auto res=dg(e)) return res;
+		return 0;
+	}
+}
