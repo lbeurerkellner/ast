@@ -4205,6 +4205,16 @@ static if(language==dp) Type[] tupleTyComponents(Expression type) {
 	if (auto tupleTy=cast(TupleTy)type) {
 		return tupleTy.types.map!(t => typeOrDataType(t)).array;
 	}
+	// unfold VectorTy of constant .num
+	if (auto vecTy=cast(VectorTy)type) {
+		if (auto lit=cast(LiteralExp)vecTy.num) {
+			if (lit.lit.type==Tok!"0") {
+				if (auto i=to!ulong(lit.lit.str)) {
+					return cast(Type[])iota(0, i).map!(i => vecTy.next).array;
+				}
+			}
+		}
+	}
 	if (type==unit) return [];
 	return [typeOrDataType(type)];
 }
