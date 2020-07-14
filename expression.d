@@ -1788,3 +1788,25 @@ class InitializedFunctionExp: Expression {
 		return 0;
 	}
 }
+
+class CommentExp: Expression {
+	string comment;
+	
+	this(string comment){
+		this.comment = comment;
+	}
+	override CommentExp copyImpl(CopyArgs args){
+		return new CommentExp(comment);
+	}
+	override string toString(){ return "// "~comment; }
+
+	override string kind() { return "comment"; }
+
+	override Expression evalImpl(Expression ntype){
+		return this;
+	}
+	mixin VariableFree; // TODO
+	override int componentsImpl(scope int delegate(Expression) dg){
+		return 0;
+	}
+}

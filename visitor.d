@@ -116,6 +116,12 @@ abstract class AstVisitor(T) {
     T handleSliceExp(SliceExp sliceExp) {
         return handleUnsupportedExp(sliceExp);
     }
+    T handleCommentExp(CommentExp commentExp) {
+        return handleUnsupportedExp(commentExp);
+    }
+    T handleInitializedFunctionExp(InitializedFunctionExp funExp) {
+        return handleUnsupportedExp(funExp);
+    }
 
     T visit(Expression expr) {
         if (expr is null) { 
@@ -185,6 +191,10 @@ abstract class AstVisitor(T) {
             return this.handlePullExp(pullExp);
         } else if (auto sliceExp = cast(SliceExp)expr) {
             return this.handleSliceExp(sliceExp);
+        } else if (auto commentExp = cast(CommentExp)expr) {
+            return this.handleCommentExp(commentExp);
+        } else if (auto funExp = cast(InitializedFunctionExp)expr) {
+            return this.handleInitializedFunctionExp(funExp);
         } else {
             return this.handleUnsupportedExp(expr);
         }

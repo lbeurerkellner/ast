@@ -897,6 +897,10 @@ Expression statementSemantic(Expression e,Scope sc)in{
 			}
 			return defineIfFreshExp;
 		}
+		if (auto comment=cast(CommentExp)e) {
+			comment.type=unit;
+			return comment;
+		}
 	}
 
 	sc.error(format("not supported at this location: %s", e.toString),e.loc);
