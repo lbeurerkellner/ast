@@ -2921,6 +2921,8 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 		return untapeExp;
 	}
 	if(auto tapeExp=cast(TapeExp)expr){
+		tapeExp.type=unit;
+		tapeExp.e = expressionSemantic(tapeExp.e, sc, ConstResult.no);
 		return tapeExp;
 	}
 	if(auto npt=cast(NoParamTypeExp)expr){

@@ -1711,7 +1711,13 @@ class TapeExp: Expression{
 		this.e=e;
 	}
 	override TapeExp copyImpl(CopyArgs args){
-		return new TapeExp(name.copy(args), e.copy(args));
+		auto res = new TapeExp(name.copy(args), e.copy(args));
+		// maintain .meaning for Identifier expressions 'e'
+		auto expAsIdent = cast(Identifier)e;
+		auto resExpAsIdent = cast(Identifier)res.e;
+		if (expAsIdent&&resExpAsIdent) resExpAsIdent.meaning = expAsIdent.meaning;
+		
+		return res;
 	}
 	override string toString(){ return _brk("tape "~e.toString()~" as "~name.toString); }
 
@@ -1775,7 +1781,7 @@ class InitializedFunctionExp: Expression {
 	override InitializedFunctionExp copyImpl(CopyArgs args){
 		return new InitializedFunctionExp(f.copy(args), p.copy(args));
 	}
-	override string toString(){ return _brk("(θ"~p.toString()~"."~f.toString~")"); }
+	override string toString(){ return _brk("(θ["~p.toString()~"] "~f.toString~")"); }
 
 	override string kind() { return "initialized function expression"; }
 
