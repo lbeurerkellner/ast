@@ -264,7 +264,7 @@ class DatDecl: Declaration{
 		// returns the FunctionDef of the parameter initialization procedure or null if none exists
 		@property FunctionDef initFunctionDef() {
 			return cast(FunctionDef)body_.ascope_.lookupHere(
-				new Identifier(INIT_FUNCTION_NAME),false,Lookup.consuming);
+				new Identifier(INIT_FUNCTION_NAME),false,Lookup.probing);
 		}
 
 	}
