@@ -2960,8 +2960,14 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 			unparamExp.sstate = SemState.error;
 			return unparamExp;
 		}
+		if (!prodTy.isInitialized) {
+			sc.error(text("operator unparam can only be applied to initialized parametered function expressions, not ", 
+				unparamExp.e), unparamExp.loc);
+			unparamExp.sstate = SemState.error;
+			return unparamExp;
+		}
 		auto unparamProdTy = productTy(prodTy.isConst ~ [true], prodTy.names ~ ["θ"], 
-			tupleTyIfRequired(tupleTyComponents(prodTy.dom) ~ cast(Type[])[parameterSetTopTy(sc)]),
+			tupleTyIfRequired(tupleTyComponents(prodTy.dom) ~ cast(Type[])[parameterSetTy(unparamExp.e, sc)]),
 			prodTy.cod, prodTy.isSquare, true, prodTy.annotation, prodTy.isClassical, false, false, 
 			prodTy.isDifferentiable, prodTy.isPullbackOf
 		);
