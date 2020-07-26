@@ -25,7 +25,6 @@ abstract class Node{
 	SemState sstate = SemState.presemantic;
 }
 
-
 abstract class Expression: Node{
 	Expression type;
 	int brackets=0;
@@ -905,7 +904,7 @@ abstract class ABinaryExp: Expression{
 	}
 
 	override @property string kind() {
-		return "ABinaryExp";
+		return "expression";
 	}
 	
 	/// string representation of binary operator

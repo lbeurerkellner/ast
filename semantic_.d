@@ -46,6 +46,7 @@ alias EqExp=BinaryExp!(Tok!"=");
 alias NeqExp=BinaryExp!(Tok!"≠");
 alias OrExp=BinaryExp!(Tok!"||");
 alias AndExp=BinaryExp!(Tok!"&&");
+alias RangeExp=BinaryExp!(Tok!"..");
 
 static if(language==dp) {
 	alias NonDiffTypeExp=UnaryExp!(Tok!"nondiff");
@@ -2299,19 +2300,63 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 				}
 			}
 		}
+		Expression lengthOfRange(RangeExp range) {
+			Expression newNum = new BinaryExp!(Tok!"-")(range.e2, range.e1);
+			newNum = expressionSemantic(newNum, sc, constResult).eval();
+			newNum.type=ℕt(true); // forces a positive num here, anything else fails at runtime anyway
+			return newNum;
+		}
+		Expression checkAndDetermineTensorIndexType(VectorTy vecTy, int argumentIndex=0) {
+			if (argumentIndex >= idx.a.length) {
+				return vecTy;
+			}
+			auto a = idx.a[argumentIndex];
+			// consider index range arguments here
+			auto range = cast(RangeExp)a;
+
+			// check index type
+			if(!range&&!isSubtype(a.type,ℤt(true))&&!isSubtype(a.type,Bool(false))&&!isInt(a.type)&&!isUint(a.type)){
+				sc.error(format("index should be an integer or index range, not %s",a.type),a.loc);
+				idx.sstate=SemState.error;
+				return unit;
+			}
+			// case: more indices were provided
+			if (idx.a.length > argumentIndex+1) {
+				if (auto nextVecTy=cast(VectorTy)vecTy.next) {
+					// recursively check the next index argument with the next vector ty
+					auto nextTy = checkAndDetermineTensorIndexType(nextVecTy, argumentIndex+1);
+					if (range) {
+						return vectorTy(nextTy, lengthOfRange(range));
+					} else {
+						return nextTy;
+					}
+				} else {
+					sc.error(format("too many indices to index value of type %s",idx.e.type),idx.a[argumentIndex].loc);
+					idx.sstate=SemState.error;
+					return unit;
+				}
+			// case: no more indices given
+			} else {
+				if (range) {
+					return vectorTy(vecTy.next, lengthOfRange(range));
+				} else {
+					return vecTy.next;
+				}
+			}
+		}
 		Expression indexedTyped = unalias(idx.e.type).eval();
 		if(auto at=cast(ArrayTy)indexedTyped){
 			check(at.next);
 		}else if(auto vt=cast(VectorTy)indexedTyped){
-			check(vt.next);
+			idx.type = checkAndDetermineTensorIndexType(vt);
 		}else if(isInt(indexedTyped)||isUint(indexedTyped)){
 			check(Bool(indexedTyped.isClassical()));
 		}else if(auto tt=cast(TupleTy)indexedTyped){
 			if(idx.a.length!=1){
 				sc.error(format("only one index required to index type %s",tt),idx.loc);
 				idx.sstate=SemState.error;
-			}else{
-				auto lit=cast(LiteralExp)idx.a[0];
+			// case 1: integer index
+			} else if (auto lit=cast(LiteralExp)idx.a[0]) {
 				if(!lit||lit.lit.type!=Tok!"0"){
 					sc.error(format("index for type %s should be integer constant",tt),idx.loc); // TODO: allow dynamic indexing if known to be safe?
 					idx.sstate=SemState.error;
@@ -2324,6 +2369,36 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 						idx.type=tt.types[cast(size_t)c.toLong()];
 					}
 				}
+			// case 2: slice index
+			} else if (auto range=cast(RangeExp)idx.a[0]) {
+				auto llit=cast(LiteralExp)range.e1, rlit=cast(LiteralExp)range.e2;
+				if(!llit||llit.lit.type!=Tok!"0"){
+					sc.error(format("slice lower bound for type %s should be integer constant",cast(Expression)tt),idx.loc);
+					idx.sstate=SemState.error;
+				}
+				if(!rlit||rlit.lit.type!=Tok!"0"){
+					sc.error(format("slice upper bound for type %s should be integer constant",cast(Expression)tt),idx.loc);
+					idx.sstate=SemState.error;
+				}
+				if(idx.sstate==SemState.error)
+					return idx;
+				auto lc=ℤ(llit.lit.str), rc=ℤ(rlit.lit.str);
+				if(lc<0){
+					sc.error(format("slice lower bound for type %s cannot be negative",tt),idx.loc);
+					idx.sstate=SemState.error;
+				}
+				if(lc>rc){
+					sc.error("slice lower bound exceeds slice upper bound",idx.loc);
+					idx.sstate=SemState.error;
+				}
+				if(rc>tt.length){
+					sc.error(format("slice upper bound for type %s exceeds %s",tt,tt.length),idx.loc);
+					idx.sstate=SemState.error;
+				}
+				idx.type=tt[cast(size_t)lc..cast(size_t)rc];
+			} else {
+				sc.error(format(" type %s can only be indexed using constant indices or index ranges",cast(Expression)tt),idx.loc);
+				idx.sstate=SemState.error;
 			}
 		}else{
 			sc.error(format("type %s is not indexable",indexedTyped),idx.loc);
@@ -2397,7 +2472,7 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 				sl.sstate=SemState.error;
 			}
 			sl.type=tt[cast(size_t)lc..cast(size_t)rc];
-		}else{
+		}else{ 
 			sc.error(format("type %s is not sliceable",sl.e.type),sl.loc);
 			sl.sstate=SemState.error;
 		}
@@ -2706,6 +2781,27 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 			ce.sstate=SemState.error;
 		}
 		return ce;
+	}
+
+	if (auto re=cast(RangeExp)expr) {
+		re.e1 = expressionSemantic(re.e1, sc, constResult);
+		propErr(re.e1,re);
+		re.e2 = expressionSemantic(re.e2, sc, constResult);
+		propErr(re.e2,re);
+
+		if (!isSubtype(re.e1.type, ℤt(true))) {
+			sc.error(text("the lower bound of an index range must be of type ℕ, not ", re.e1.type), re.e1.loc);
+			re.sstate=SemState.error;
+			return re;
+		}
+		if (!isSubtype(re.e2.type, ℤt(true))) {
+			sc.error(text("the upper bound of an index range must be of type ℕ, not ", re.e2.type), re.e2.loc);
+			re.sstate=SemState.error;
+			return re;
+		}
+		re.sstate=SemState.completed;
+		re.type=unit;
+		return re;
 	}
 
 	if(auto pr=cast(BinaryExp!(Tok!"×"))expr){

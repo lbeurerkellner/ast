@@ -41,6 +41,7 @@ int getLbp(TokenType type) pure{ // operator precedence
 	switch(type){
 	//case Tok!"..": return 10; // range operator
 	case Tok!",":  return 10; // comma operator
+	case Tok!"..": return 15; // range operator
 	// assignment operators
 	case Tok!"←":
 	case Tok!"/=",Tok!"div=",Tok!"&=",Tok!"∧=",Tok!"⊕=",Tok!"|=",Tok!"∨=",Tok!"-=",Tok!"sub=":
@@ -564,12 +565,6 @@ struct Parser{
 				nextToken();
 				if(ttype==Tok!"]"){loc=loc.to(tok.loc); nextToken(); mixin(rule!(IndexExp,Existing,q{left,(Expression[]).init,false}));}
 				auto l=parseExpression(rbp!(Tok!","));
-				if(ttype==Tok!".."){
-					nextToken();
-					auto r=parseExpression();
-					expect(Tok!"]");
-					return res=new SliceExp(left,l,r);
-				}
 				res=New!IndexExp(left,parseArgumentList(Tok!"]",l).expand);
 				expect(Tok!"]");
 				return res;
@@ -1024,7 +1019,7 @@ struct Parser{
 		bool leftExclusive=false,rightExclusive=false;
 		if(tok.type==Tok!"("){ leftExclusive=true; nextToken(); }
 		else expect(Tok!"[");
-		auto left=parseExpression();
+		auto left=parseExpression(rbp!(Tok!".."));
 		Expression step=null;
 		expect(Tok!"..");
 		auto right=parseExpression();

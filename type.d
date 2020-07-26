@@ -913,8 +913,8 @@ VectorTy tensorTy(Expression dtype, Expression[] shape) {
 VectorTy vectorTy(Expression next, Expression num)in{
 	assert(next&&next.type.isTypeTy);
 	assert(num && (
-		isSubtype(num.type,ℕt(true)) || 
-		isSubtype(num.type,arrayTy(ℕt(true))
+		isSubtype(num.type,ℤt(true)) ||  
+		isSubtype(num.type,arrayTy(ℤt(true))
 	)));	   
 }body{
 	if (isSubtype(num.type, arrayTy(ℕt(true)))) {
@@ -934,6 +934,9 @@ VectorTy vectorTy(Expression next, Expression num)in{
 		auto vecTy = new VectorTy(next,num);
 		if (auto tupleExp = cast(TupleExp)num) {
 			return tensorTy(vecTy.next, tupleExp.e);
+		}
+		if (auto arrayExp = cast(ArrayExp)num) {
+			return tensorTy(vecTy.next, arrayExp.e);
 		}
 		return vecTy;
 	})(next, num);
