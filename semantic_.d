@@ -197,15 +197,14 @@ Expression presemantic(Declaration expr,Scope sc){
 			// make sure the inner lambda expression of pullback declarations
 			// is marked as nondiff in the AST
 			if (fd.isPullback) {
-				auto bdy = fd.body_; if (!bdy) return expr;
-				auto firstStmt = bdy.s[0]; if (!firstStmt) return expr;
-				auto retExp = cast(ReturnExp)firstStmt; if (!retExp) return expr;
-				auto lambdaExp = cast(LambdaExp)retExp.e; if (!lambdaExp) return expr;
+				auto bdy = fd.body_; assert(!!bdy);
+				auto firstStmt = bdy.s[0]; assert(!!firstStmt);
+				auto retExp = cast(ReturnExp)firstStmt; assert(!!retExp);
+				auto lambdaExp = cast(LambdaExp)retExp.e; assert(!!lambdaExp);
 				lambdaExp.fd.isDifferentiable = false;
 				lambdaExp.fd.isParameterized = false;
 			}
 		}
-
 		declareParameters(fd,fd.isSquare,fd.params,fsc); // parameter variables
 		if(fd.rret){
 			fd.ret=typeSemantic(fd.rret,fsc);
@@ -1823,16 +1822,31 @@ enum ConstResult:bool{
 	yes,
 }
 
-Expression broadcastedType(VectorTy vecLhs, VectorTy vecRhs) {
+Expression broadcastedType(bool preserveBool)(Expression t1, Expression t2) {
 	// check for simple assignment compatibility
-	if (auto res = vecLhs.combineTypesImpl(vecRhs, true)) {
+	if (auto res = t1.combineTypesImpl(t2, true)) {
 		return res;
 	}
-	// TODO: check for broadcast compatibility
-	/*auto lhsShape = vecLhs.shape;
-	auto rhsShape = vecRhs.shape;
-	auto sourceShape = lhsShape.length <= rhsShape.length ? lhsShape : rhsShape;
-	auto targetShape = lhsShape.length > rhsShape.length ? lhsShape : rhsShape;*/
+	auto vecTy1 = cast(VectorTy)t1;
+	auto vecTy2 = cast(VectorTy)t2;
+
+	// both are vectors
+	if (vecTy1&&vecTy2) {
+		// case 1: both cases are non-scalar
+		// check for broadcastability
+	} else if (vecTy1) {
+		// case 2: rhs is scalar
+		auto broadcastedElementType = arithmeticType!(preserveBool)(vecTy1.elementType, t2);
+		if (!broadcastedElementType) return null;
+		return replacingElementType(vecTy1, broadcastedElementType);
+	} else if (vecTy2) {
+		// case 3: lhs is scalar
+		auto broadcastedElementType = arithmeticType!(preserveBool)(t1, vecTy2.elementType);
+		if (!broadcastedElementType) return null;
+		return replacingElementType(vecTy2, broadcastedElementType);
+	} else {
+		return null;
+	}
 	return null;
 }
 
@@ -1845,10 +1859,10 @@ Expression arithmeticType(bool preserveBool)(Expression t1, Expression t2){
 	if(preludeNumericTypeName(t1) != null||preludeNumericTypeName(t2) != null) {
 		return joinTypes(t1,t2);
 	}
-	if (cast(VectorTy)t1&&cast(VectorTy)t2) {
-		return broadcastedType(cast(VectorTy)t1, cast(VectorTy)t2);
-	}
 	t1=t1.eval(); t2=t2.eval();
+	if (cast(VectorTy)t1||cast(VectorTy)t2) {
+		return broadcastedType!(preserveBool)(t1, t2);
+	}
 	if(!(isNumeric(t1)&&isNumeric(t2))) return null;
 	auto r=joinTypes(t1,t2);
 	static if(!preserveBool){
@@ -3062,11 +3076,7 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 			unparamExp.sstate = SemState.error;
 			return unparamExp;
 		}
-		auto unparamProdTy = productTy(prodTy.isConst ~ [true], prodTy.names ~ ["θ"], 
-			tupleTyIfRequired(tupleTyComponents(prodTy.dom) ~ cast(Type[])[parameterSetTy(unparamExp.e, sc)]),
-			prodTy.cod, prodTy.isSquare, true, prodTy.annotation, prodTy.isClassical, false, false, 
-			prodTy.isDifferentiable, prodTy.isPullbackOf
-		);
+		auto unparamProdTy = unparam(prodTy, unparamExp, sc);
 		unparamExp.type = unparamProdTy;
 		return unparamExp;
 	}
@@ -3095,6 +3105,15 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 			return gradExp;
 		}
 
+		Expression[] args;
+		Expression findTarget(Expression e) {
+			if (auto ce = cast(CallExp)e) {
+				args ~= ce.arg;
+				return findTarget(ce.e);
+			} else {
+				return e;
+			}
+		}
 		ProductTy ftype = cast(ProductTy)ce.e.type;
 		if (!ftype) return ce;
 		auto cod = ftype.cod;
@@ -3103,17 +3122,20 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 			gradExp.sstate = SemState.error;
 			return gradExp;
 		}
-		auto fname = ce.e.toString;
-		if (!pullbackTy(fname, ftype, sc, ce.e)) {
-			sc.error(format("%s does not have a pullback", fname), ce.e.loc);
+		auto target = findTarget(ce);
+		auto fname = target.toString;
+		if (!pullbackTy(fname, ftype, sc, target)) {
+			sc.error(format("%s does not have a pullback", fname), target.loc);
 			return gradExp;
 		}
 
-		auto pullExp = new PullExp(ce.e);
-		auto outerPullCallExp = new CallExp(pullExp, ce.arg, true, true);
-		auto innerPullCallExp = new CallExp(outerPullCallExp, LiteralExp.makeFloat(1.0), false, true);
-
-		return expressionSemantic(innerPullCallExp, sc, constResult);
+		Expression pulledCallExp = new PullExp(target);
+		foreach_reverse(a; args) {
+			pulledCallExp = new CallExp(pulledCallExp, a, true, true);
+		}
+		pulledCallExp = new CallExp(pulledCallExp, LiteralExp.makeFloat(1.0), false, true);
+		writeln(pulledCallExp);
+		return expressionSemantic(pulledCallExp, sc, constResult);
 	}
 	if(auto initExp=cast(InitExp)expr){
 		initExp.target=expressionSemantic(initExp.target, sc, ConstResult.yes);
@@ -3209,6 +3231,16 @@ static if (language==dp) FieldExp parameterSetParamMemberSemantic(Expression con
 	fe.sstate = SemState.completed;
 
 	return fe;
+}
+
+// unparam operator on the type-level
+static if (language==dp) ProductTy unparam(ProductTy prodTy, UnparamExp unparamExp, Scope sc) {
+	auto extendedDomElements = tupleTyComponents(prodTy.dom) ~ cast(Type[])[parameterSetTy(unparamExp.e, sc)];
+	return productTy(prodTy.isConst ~ [true], prodTy.names ~ ["θ"], 
+		tupleTyIfRequired(extendedDomElements),
+		prodTy.cod, prodTy.isSquare, extendedDomElements.length > 1, prodTy.annotation, prodTy.isClassical, false, false, 
+		prodTy.isDifferentiable, prodTy.isPullbackOf
+	);
 }
 
 static if (language==dp) Expression parameterSetTangentVectorMemberSemantic(FieldExp fe, Scope sc) {
@@ -3365,7 +3397,7 @@ static if (language==dp) Expression manifoldMemberSemantic(Expression target, st
 	if (!["move", "tangentVector", "tangentZero"].any!(n => n == memberName)) {
 		return null;
 	}
-
+	
 	Expression resolveLocally(Expression target, Expression targetType, string memberName) {
 		if(ManifoldDecl manifoldDecl=sc.getManifoldDecl()) { // check if we are in manifold decl)
 			auto ident = cast(Identifier)manifoldDecl.typeName;
@@ -3540,9 +3572,15 @@ bool setFtype(FunctionDef fd){
 	auto pt=fd.isTuple?tupleTy(pty):pty[0];
 
 	if (language==dp) {
+		// propagate 'nondiff' property of innermost function upwards in the case of higher-order functions
+		auto retFun = cast(FunTy)fd.ret;
+		bool returnTypeIsNonDifferentiableFunction=retFun&&!retFun.isDifferentiable;
+		bool isDifferentiable = fd.isDifferentiable&&!returnTypeIsNonDifferentiableFunction;
+
 		fd.ftype=productTy(pc,pn,pt,fd.ret,fd.isSquare,fd.isTuple,
 							fd.annotation,!fd.context||fd.context.vtype==contextTy(true), 
-							fd.isParameterized, false, fd.isDifferentiable);
+							fd.isParameterized, false, isDifferentiable);
+		fd.isDifferentiable = isDifferentiable;
 	} else {
 		fd.ftype=productTy(pc,pn,pt,fd.ret,fd.isSquare,fd.isTuple,
 							fd.annotation,!fd.context||fd.context.vtype==contextTy(true));
@@ -3569,6 +3607,8 @@ FunctionDef functionDefSemantic(FunctionDef fd,Scope sc){
 		static if(language==silq) fsc.pushConsumed();
 		if(fd.sstate==SemState.completed){
 			foreach(id;fd.ftype.freeIdentifiers){
+				// allow free varTy's w/o .meaning (may occur during subtype checking of synthesized manifold members)
+				if (id.meaning is null && varTy(id.name, id.type) == id) continue;
 				assert(!!id.meaning);
 				if(cast(DatDecl)id.meaning) continue; // allow nested types to be returned from functions
 				if(id.meaning.scope_.isNestedIn(fsc)){
@@ -3666,6 +3706,7 @@ static if(language==dp) FunctionDef pullbackSemantic(FunctionDef fd, Scope sc) {
 		return fd;
 	}
 	ProductTy fty = fd.ftype;
+
 	// check pullback signature
 	if (!isSubtype(fty, pty) || !isSubtype(pty, fty)) {
 		sc.error(format("pullback for function %s requires signature %s not %s.", 
@@ -4335,23 +4376,21 @@ static if(language==dp) Expression tupleTyIfRequired(T)(T[] types) {
 	}
 }
 
-// TODO actually implement .manifold for AggregateTy
-static if(language==dp) bool hasManifoldImpl(Type ty, Scope sc) {
-	if (auto aggrty = cast(AggregateTy)ty) {
-		return aggrty.isParameterized;
+static if(language==dp) bool hasManifoldImpl(Expression e, Scope sc) {
+	if (auto ty=typeOrDataType(e)) {
+		if (auto aggrty = cast(AggregateTy)ty) {
+			return aggrty.isParameterized;
+		}
+		return ty.manifold(sc) !is null;
+	} else if (e.type==manifoldTypeTy) {
+		return true;
 	}
-	return ty.manifold(sc) !is null;
+	return false;
 }
 
 static if(language==dp) ProductTy pullbackTy(FunctionDef primalFd, Scope sc) {
 	// skip built-in functions
     if (primalFd.body_ is null) {
-        return null;
-    }
-
-    // temporary: skip functions of dependent type
-    if (primalFd.isSquare) {
-        //writeln(format("Skipping pullback generation for dependent function: %s", primalFd.toString));
         return null;
     }
 
@@ -4382,11 +4421,24 @@ static if(language==dp) ProductTy pullbackTy(FunctionDef primalFd, Scope sc) {
 
 static if(language==dp) ProductTy pullbackTy(string name, ProductTy ftype, Scope sc, Node errNode) {
 	// switch around dom/cod since the pullback goes the other way round
-	Type[] domTypes = tupleTyComponents(ftype.cod);
-	Type[] codTypes = tupleTyComponents(ftype.dom);
+	string[][] paramNames = collectAllParameterNames(ftype);
+	bool[][] isConst = collectAllParametersIsConst(ftype);
+	
+	Type[] domTypes = tupleTyComponents(findFinalFunTyInSquaredFunTy(ftype).cod);
+	Expression[][] codTuples = collectCompleteFunTyDom(ftype);
+
+	Expression[] differentiableCodTypes;
+	string[] differentiableParameterNames;
+	
+	Expression[] parameterSetCodTypes;
+	string[] parameterSetParameterNames;
 
 	// no pullback for functions w/o return type/parameters
-	if (domTypes.length==0||codTypes.length==0) {
+	if (domTypes.length==0||codTuples[0].length==0) {
+		return null;
+	}
+	// no pullback for non-differentiable functions
+	if (!ftype.isDifferentiable) {
 		return null;
 	}
 
@@ -4423,49 +4475,129 @@ static if(language==dp) ProductTy pullbackTy(string name, ProductTy ftype, Scope
 		manifoldDomTypes ~= [manifoldDom];
 	}
 
-	foreach(idx, codType; codTypes) {
-		// malformed ftype
-		if (codType is null) {
-			return null;
-		}
-		// no pullbacks for functions w/o return types
-		if (codType==unit) {
-			return null;
-		}
+	foreach(tupIdx, codTuple; codTuples) {
+		foreach(idx, codType; codTuple) {
+			// malformed ftype
+			if (codType is null) {
+				return null;
+			}
+			// no pullbacks for functions w/o return types
+			if (codType==unit) {
+				return null;
+			}
+			// exclude parameters of non-differentiable type
+			if (!hasManifoldImpl(codType, sc)) {
+				// writeln("skipping non-differentiable type ", codType);
+				continue;
+			}
 
-		if (!hasManifoldImpl(codType, sc)) {
-			sc.error(format("failed to determine pullback signature for function %s with" ~ 
-				" non-differentiable parameter type %s.", name, codType.toString), errNode.loc);
-			return null;
+			// track encountered parameter set parameters separately
+			if (cast(ParameterSetTy)codType) {
+				parameterSetCodTypes ~= [codType];
+				parameterSetParameterNames ~= [paramNames[tupIdx][idx]];
+				continue;
+			}
+
+			differentiableCodTypes ~= [codType];
+			differentiableParameterNames ~= [paramNames[tupIdx][idx]];
 		}
 	}
 	
-	auto pullbackSquareParamNames = ftype.names.array;
-	auto pullbackSquareDom = ftype.dom;
-	const bool squareDomIsTuple = pullbackSquareParamNames.length > 1;
-	
+	auto pullbackSquareDoms = codTuples.map!(t => tupleTyIfRequired(t)).array;
+	bool[] squareDomIsTuple = codTuples.map!(t => t.length > 1).array;
+
 	auto pullbackParamNames = ["v"];
 	auto pullbackDom = tupleTyIfRequired(manifoldDomTypes.map!(m => m.tangentVecTy).array);
 
 	Expression pullbackCod;
 	Expression[] pullbackCodComponents;
-	foreach(idx, param; pullbackSquareParamNames) {
+	foreach(idx, param; differentiableParameterNames) {
 			auto id = new Identifier(param);
-			id.type = ftype.argTy(idx);
+			id.type = differentiableCodTypes[idx];
 			pullbackCodComponents ~= [tangentVectorTy(id, sc)];
 	}
+	// add parameter set parameter tangent vectors to the back of the co-domain tuple
+	foreach(idx, psetParam; parameterSetParameterNames) {
+		auto id = new Identifier(psetParam);
+		id.type = parameterSetCodTypes[idx];
+		pullbackCodComponents ~= [tangentVectorTy(id, sc)];
+	}
+
 	if (pullbackCodComponents.length == 1) {
 		pullbackCod = pullbackCodComponents[0];
 	} else {
 		pullbackCod = tupleTy(pullbackCodComponents);
 	}
-	
+
 	// TODO: consider what happens to .isParameterize, .isInitialized here
 	auto pullbackOpTy = productTy([true], pullbackParamNames, pullbackDom, pullbackCod, false, false, 
 								  Annotation.none, true, false, false, false, ftype);
-	return productTy(ftype.isConst, pullbackSquareParamNames, pullbackSquareDom, pullbackOpTy, 
-		true, squareDomIsTuple, Annotation.none, true, false, false, false);
+	return createChainOfSquaredProductTy(isConst, squareDomIsTuple, paramNames, pullbackSquareDoms, pullbackOpTy);
 }
+
+static if(language==dp) ProductTy createChainOfSquaredProductTy(bool[][] isConst, bool[] isTuple, string[][] paramNames, Expression[] pullbackSquareDom, ProductTy nextProductTy) {
+	ulong length = isConst.length;
+	assert(length==isTuple.length);
+	assert(length==paramNames.length);
+	assert(length==pullbackSquareDom.length);
+
+	if (length==0) {
+		return nextProductTy;
+	} else {
+		auto fty = productTy(isConst[$-1], paramNames[$-1], pullbackSquareDom[$-1], nextProductTy, 
+			true, isTuple[$-1], Annotation.none, true, false, false, false);
+		return createChainOfSquaredProductTy(isConst[0..$-1], isTuple[0..$-1], paramNames[0..$-1], pullbackSquareDom[0..$-1], fty);
+	}
+}
+
+static if(language==dp) string[][] collectAllParameterNames(ProductTy ftype) {
+	if (ftype.isSquare) {
+		auto nextOrderFtype = cast(ProductTy)ftype.cod;
+		assert(!!nextOrderFtype);
+		return [ftype.names] ~ collectAllParameterNames(nextOrderFtype);
+	} else {
+		return [ftype.names.array];
+	}
+}
+
+static if(language==dp) bool[][] collectAllParametersIsConst(ProductTy ftype) {
+	if (ftype.isSquare) {
+		auto nextOrderFtype = cast(ProductTy)ftype.cod;
+		assert(!!nextOrderFtype);
+		return [ftype.isConst] ~ collectAllParametersIsConst(nextOrderFtype);
+	} else {
+		return [ftype.isConst];
+	}
+}
+
+static if(language==dp) ProductTy findFinalFunTyInSquaredFunTy(FunTy ftype) {
+	if (ftype.isSquare) {
+		auto nextOrderFtype = cast(ProductTy)ftype.cod;
+		assert(!!nextOrderFtype);
+		return findFinalFunTyInSquaredFunTy(nextOrderFtype);
+	} else {
+		return ftype;
+	}
+}
+
+static if(language==dp) Expression[][] collectCompleteFunTyDom(FunTy ftype) {
+	if (ftype.isSquare) {
+		auto nextOrderFtype = cast(ProductTy)ftype.cod;
+		assert(!!nextOrderFtype);
+		if (ftype.names.length > 1) {
+			return [cast(Expression[])tupleTyComponents(ftype.dom)]  ~ collectCompleteFunTyDom(nextOrderFtype);
+		} else {
+			return [[ftype.dom]]  ~ collectCompleteFunTyDom(nextOrderFtype);
+		}
+	} else {
+		if (ftype.names.length > 1) {
+			return [cast(Expression[])tupleTyComponents(ftype.dom)];
+		} else {
+			return [[ftype.dom]];
+		}
+	}
+}
+
 static if(language==dp) Expression binaryPullbackTy(BinaryPullbackCallExp binaryPullbackCallExp, Scope sc) {
 	auto domT1 = cast(Type)binaryPullbackCallExp.e1.type;
 	auto domT2 = cast(Type)binaryPullbackCallExp.e2.type;

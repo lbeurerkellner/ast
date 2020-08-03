@@ -54,6 +54,7 @@ abstract class Expression: Node{
 	bool isConstant(){ return false; }
 
 	final Expression eval(){
+		assert(!!this);
 		auto ntype=!type?null:type is this?this:type.eval();
 		auto r=evalImpl(ntype);
 		if(!r.type) r.type=ntype;
@@ -74,13 +75,14 @@ abstract class Expression: Node{
 		assert(r !is null, text("substitute on ", this, " returned null ", typeid(this)));
 		if(type){
 			if(type == this) r.type=r;
-			else {
+			else { 
 				auto substType = type.substitute(subst);
 				if (r.type is null) r.type=substType;
 				// subtype check allows refinement of type by substitution
 				else {
-					assert(isSubtype(r.type, substType) || cast(Identifier)substType,
-						text("Expected substituted type ", substType, " but got ", r.type, " for ", this));
+					// TODO: consider whether this can be re-enabled
+					/*assert(isSubtype(r.type, substType) || cast(Identifier)substType,
+						text("Expected substituted type ", substType, " but got ", r.type, " for ", this, " with subst ", subst));*/
 				}
 			}
 		}
@@ -100,9 +102,10 @@ abstract class Expression: Node{
 			assert(!!self);
 		}do{
 			if(auto r=self.freeVarsImpl(dg)) return r;
-			if(self.type != self)
+			if(self.type && self.type != self) {
 				foreach(v;self.type.freeVars())
 					if(auto r=dg(v)) return r;
+			}
 			return 0;
 		}
 	}

@@ -773,8 +773,19 @@ class VectorTy: Type, ITupleTy{
 		if(auto r=next.freeVarsImpl(dg)) return r;
 		return num.freeVarsImpl(dg);
 	}
-	override VectorTy substituteImpl(Expression[string] subst){
-		return vectorTy(next.substitute(subst),num.substitute(subst));
+	override Expression substituteImpl(Expression[string] subst){
+		auto numSubst = num.substitute(subst);
+		auto nextSubst = next.substitute(subst);
+
+		// check for empty tuple as num
+		if (auto tupExp=cast(TupleExp)numSubst) {
+			if (tupExp.e.length == 0) {
+				// consider T^() as T
+				return nextSubst;
+			}
+		}
+
+		return vectorTy(nextSubst,numSubst);
 	}
 	override bool unifyImpl(Expression rhs,ref Expression[string] subst,bool meet){
 		if(auto tt=cast(TupleTy)rhs)
@@ -791,6 +802,11 @@ class VectorTy: Type, ITupleTy{
 			} else {
 				return next.unifyImpl(vt.next,subst,meet) && num.unifyImpl(vt.num,subst,meet);
 			}
+		}
+		if (isSubtype(elementType, rhs)) {
+			auto emptyTuple = new TupleExp([]);
+			emptyTuple.type = unit;
+			return num.unifyImpl(emptyTuple,subst, meet);
 		}
 		return false;
 	}
@@ -2055,10 +2071,15 @@ class TangentVectorTy : Type {
 				return unalias(m.tangentVecTy);
 			}
 		}
-		if (auto aggrty = isDataTyId(res.bound)) {
+		// like isDataTyId, but handles direct cases of AggregateTy as well
+		AggregateTy isDataTy(Expression e) {
+			if (auto aggrTy=cast(AggregateTy)e) return aggrTy;
+			else return isDataTyId(e);
+		}
+		if (auto aggrty = isDataTy(res.bound)) {
 			return tangentVectorTy(parameterSetTy(aggrty, sc), sc);
 		}
-		if (auto aggrty = isDataTyId(res.bound.type)) {
+		if (auto aggrty = isDataTy(res.bound.type)) {
 			return tangentVectorTy(parameterSetTy(res.bound, sc), sc);
 		}
 		return res;

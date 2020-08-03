@@ -122,6 +122,9 @@ abstract class AstVisitor(T) {
     T handleInitializedFunctionExp(InitializedFunctionExp funExp) {
         return handleUnsupportedExp(funExp);
     }
+    T handleImportExp(ImportExp importExp) {
+        return handleUnsupportedExp(importExp);
+    }
 
     T visit(Expression expr) {
         if (expr is null) { 
@@ -137,6 +140,8 @@ abstract class AstVisitor(T) {
             return this.handleFunctionDef(fd);
         } else if (auto param = cast(Parameter)expr) {
             return this.handleParameter(param);
+        } else if (auto importExp = cast(ImportExp)expr) {
+            return this.handleImportExp(importExp);
         } else if (auto varDecl = cast(VarDecl)expr) {
             return this.handleVarDecl(varDecl);
         } else if (auto ident = cast(Identifier)expr) {
