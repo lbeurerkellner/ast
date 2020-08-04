@@ -2959,7 +2959,7 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 	if(auto lit=cast(LiteralExp)expr){
 		switch(lit.lit.type){
 		case Tok!"0",Tok!".0":
-			if(!expr.type)
+			if(!expr.type) 
 				expr.type=lit.lit.str.canFind(".")?ℝ(true):lit.lit.str.canFind("-")?ℤt(true):ℕt(true); // TODO: type inference
 			return expr;
 		case Tok!"``":
@@ -2974,6 +2974,7 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 		binaryPullbackCallExp.e2 = expressionSemantic(binaryPullbackCallExp.e2, sc, ConstResult.no);
 		
 		binaryPullbackCallExp.type = binaryPullbackTy(binaryPullbackCallExp, sc);
+
 		if (!binaryPullbackCallExp.type) {
 			sc.error("failed to type pullback expression", binaryPullbackCallExp.loc);
 			binaryPullbackCallExp.type = unit;
@@ -4601,20 +4602,22 @@ static if(language==dp) Expression[][] collectCompleteFunTyDom(FunTy ftype) {
 static if(language==dp) Expression binaryPullbackTy(BinaryPullbackCallExp binaryPullbackCallExp, Scope sc) {
 	auto domT1 = cast(Type)binaryPullbackCallExp.e1.type;
 	auto domT2 = cast(Type)binaryPullbackCallExp.e2.type;
-	// domain of the original operator
-	Type dom = tupleTy([domT1, domT2]);
 
-	// no pullbacks for operations w/o arguments or w/o return types 
-	if (dom==unit) {
-		return  null;
+	Expression[] tangentCod;
+
+	foreach(dom; [domT1, domT2]) {
+		if (!dom) {
+			tangentCod ~= unit;
+			sc.error(format("failed to determine pullback type for binary operation %s with" ~ 
+				" non-handled operand type %s.", binaryPullbackCallExp.op, dom), binaryPullbackCallExp.loc);
+			binaryPullbackCallExp.sstate = SemState.error;
+		} else if (auto m = dom.manifold(sc)) {
+			tangentCod ~= m.tangentVecTy; 
+		} else {
+			// non-differentiable operands have unit tangent vector type
+			tangentCod ~= unit;
+		}
 	}
 
-	auto manifoldDom = dom.manifold(sc);
-	if (!manifoldDom) {
-		sc.error(format("failed to determine pullback type for binary operation %s with" ~ 
-			" non-differentiable operands type %s.", binaryPullbackCallExp.op, dom.toString), binaryPullbackCallExp.loc);
-		return null;
-	}
-	
-	return manifoldDom.tangentVecTy;
+	return tupleTy(tangentCod);
 }
