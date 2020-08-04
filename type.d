@@ -106,14 +106,6 @@ abstract class Type: Expression{
 		return super.isSubtypeImpl(other);
 	}
 
-	private bool _isManifoldType = false;
-	void flagAsManifoldType() { 
-		_isManifoldType = true;
-		type = manifoldTypeTy();
-	}
-	
-	@property bool isManifoldType() { return _isManifoldType; }
-
 	final Manifold manifold(Scope sc) {
 		if (!isManifoldType) return null;
 		assert(sc);
@@ -138,6 +130,16 @@ abstract class Type: Expression{
 			return mtype;
 		} else {
 			// writeln(format("Could not find manifold declaration for type %s under name %s.", this.toString(), manifoldId.toString()));
+			return null;
+		}
+	}
+
+	override Expression tangentVecTy(Scope sc) {
+		Identifier manifoldId = new Identifier("manifold " ~ this.toString);
+		if (auto decl = cast(ManifoldDecl)sc.lookup(manifoldId,false,true,Lookup.probing)) {
+			decl = manifoldDeclSemantic(decl, sc);
+			return decl.tangentVecExp;
+		} else {
 			return null;
 		}
 	}
@@ -705,15 +707,11 @@ class VectorTy: Type, ITupleTy{
 	override VectorTy copyImpl(CopyArgs args){
 		return this;
 	}
-	@property Type elementType(){
-		auto nextTy = cast(Type)next;
-		// next may not be a type in case of a generic shape
-		if(nextTy is null) return null;
-
-		if (auto nextVecTy=cast(VectorTy)unalias(nextTy)) {
+	@property Expression elementType(){
+		if (auto nextVecTy=cast(VectorTy)next) {
 			return nextVecTy.elementType;
 		}
-		return nextTy;
+		return next;
 	}
 	@property size_t length(){
 		auto lit=cast(LiteralExp)num;
@@ -729,7 +727,7 @@ class VectorTy: Type, ITupleTy{
 	}
 	override @property bool isManifoldType() {
 		if (auto ety = elementType) {
-			return ety.isManifoldType;
+			return ety.isManifoldType();
 		} else {
 			return false;
 		}
@@ -878,6 +876,15 @@ class VectorTy: Type, ITupleTy{
 		return dg(num);
 	}
 
+	override Expression tangentVecTy(Scope sc) {
+		Expression elementType = this.elementType;
+		if (!elementType) return null;
+		Expression tangentVecTy = this.elementType.tangentVecTy(sc);
+		if (!tangentVecTy) return null;
+		// construct element-wise tangentVector
+		return this.replacingElementType(tangentVecTy);
+	}
+
 	override Manifold manifoldImpl(Scope sc) {
 		Type elementType = cast(Type)this.elementType;
 		if (!elementType) {
@@ -888,7 +895,7 @@ class VectorTy: Type, ITupleTy{
 			return null;
 		}
 		// construct element-wise tangentVector
-		Type elementWiseTangentVecTy = this.replacingElementType(unalias(elementMType.tangentVecTy));
+		Expression elementWiseTangentVecTy = tangentVecTy(sc);
 
 		Scope containerScope = elementMType.manifoldDecl.declScope.parent;
 		// use internal ManifoldDeclScope w/o corresponding ManifoldDecl
@@ -958,10 +965,9 @@ VectorTy vectorTy(Expression next, Expression num)in{
 	})(next, num);
 }
 
-FunctionDef makePointWiseMoveOp(Manifold elementManifold, Type tangentVecTy, Scope sc) {
+FunctionDef makePointWiseMoveOp(Manifold elementManifold, Expression tangentVecTy, Scope sc) {
 	assert(elementManifold.moveOpDef !is null);
 	assert(elementManifold.elementType !is null);
-	assert(elementManifold.tangentVecTy !is null);
 	assert(sc !is null);
 
 	FunctionDef funDef = new PointWiseFunctionDef(new Identifier("move"), [
@@ -983,7 +989,7 @@ VectorTy replacingElementType(VectorTy vecTy, Expression elementType) {
 }
 
 
-FunctionDef makePointWiseTangentZeroExp(Manifold elementManifold, VectorTy vectorType, Type tangentVecTy, Scope sc) {
+FunctionDef makePointWiseTangentZeroExp(Manifold elementManifold, VectorTy vectorType, Expression tangentVecTy, Scope sc) {
 	assert(elementManifold.tangentZeroDef !is null);
 
 	auto id = new Identifier("tangentZero");
@@ -1780,14 +1786,13 @@ class Manifold: Node {
 	Type elementType;
 	FunctionDef moveOpDef;
 	FunctionDef tangentZeroDef;
-	Expression tangentVecTy;
+
 
 	ManifoldDecl manifoldDecl;
  
 	this(Type elementType, FunctionDef moveOpDef, Expression tangentVecTy, FunctionDef tangentZeroDef){ 
 		this.elementType = elementType;
 		this.moveOpDef = moveOpDef;
-		this.tangentVecTy = tangentVecTy;
 		this.tangentZeroDef = tangentZeroDef;
 	}
 
@@ -1803,7 +1808,6 @@ class Manifold: Node {
 		return elementType == otherManifold.elementType &&
 			moveOpDef == otherManifold.moveOpDef &&
 			tangentZeroDef == otherManifold.tangentZeroDef &&
-			tangentVecTy == otherManifold.tangentVecTy &&
 			manifoldDecl == otherManifold.manifoldDecl;
 	}
 }
@@ -1968,6 +1972,10 @@ class ParameterSetTy : Type {
 	
 	static ulong ctr = 0;
 
+	override Expression tangentVecTy(Scope sc) {
+		return tangentVectorTy(this, sc);
+	}
+
 	override Manifold manifoldImpl(Scope sc) {
 		auto elementSpecificTangentVecTy = tangentVectorTy(new Identifier("this"), sc);
 
@@ -2023,8 +2031,8 @@ class TangentVectorTy : Type {
 		super();
 	}
 
-	/// returns the Manifold currently associated with the tangent type of bound
-	private Manifold manifold() {
+	/// returns the tangent vector type currently associated with the tangent type of bound
+	private Expression resolve() {
 		Type targetType;
 		if (isTypeBound) {
 			targetType = typeOrDataType(bound);
@@ -2032,9 +2040,7 @@ class TangentVectorTy : Type {
 			targetType = typeOrDataType(bound.type);
 		}
 		if (!targetType) return null;
-		auto ty=cast(Type)targetType;
-		if (!ty) return null;
-		return ty.manifold(sc);
+		return targetType.tangentVecTy(sc);
 	}
 
 	override TangentVectorTy copyImpl(CopyArgs args){
@@ -2066,9 +2072,11 @@ class TangentVectorTy : Type {
 
 	override Expression evalImpl(Expression ntype){ 
 		TangentVectorTy res = tangentVectorTy(this.bound.eval(), sc);
-		if (auto m = res.manifold()) {
-			if ((cast(TangentVectorTy)m.tangentVecTy) is null) {
-				return unalias(m.tangentVecTy);
+		// check whether the evaluation resolves this tangent vector type 
+		// to some concrete other type
+		if (auto tv = res.resolve()) {
+			if ((cast(TangentVectorTy)tv) is null) {
+				return unalias(tv);
 			}
 		}
 		// like isDataTyId, but handles direct cases of AggregateTy as well
@@ -2104,12 +2112,12 @@ class TangentVectorTy : Type {
 			}
 		}
 		// otherwise, try to resolve tangent vector to concrete type
-		if (auto m = this.manifold()) {
+		if (auto tv = resolve()) {
 			// value-bound: given bound:T, check T.tangentVector :- other
 			// type-bound: given bound=T:*, check T.tangentVector :- other
-			if (m.tangentVecTy==this) 
+			if (tv==this) 
 				return this==other;
-			return isSubtype(m.tangentVecTy, other);
+			return isSubtype(tv, other);
 		}
 
 
@@ -2117,11 +2125,10 @@ class TangentVectorTy : Type {
 	}
 	mixin VariableFree;
 	override Expression combineTypesImpl(Expression r,bool meet){
-		if (auto m = this.manifold()) {			
+		if (auto tv = resolve()) {			
 			// value-bound: given bound:T, combine T.tangentVector + other
 			// type-bound: given bound=T:*, combine T.tangentVector + other	
-			if (m.tangentVecTy==this) return null;
-			return combineTypes(m.tangentVecTy, r, meet);
+			return combineTypes(tv, r, meet);
 		} else if (auto otherTangentVec = cast(TangentVectorTy)r) {
 			// lift both bounds to type-bound tangent vector types
 			auto typeBound = isTypeBound?bound:bound.type;

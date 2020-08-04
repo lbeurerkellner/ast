@@ -206,6 +206,18 @@ abstract class Expression: Node{
 		final bool isMfree(){ return getAnnotation()>=Annotation.mfree; }
 	}
 
+	static if(language==dp){
+		private bool _isManifoldType = false;
+		void flagAsManifoldType() { 
+			_isManifoldType = true;
+			type = manifoldTypeTy();
+		}
+		
+		@property bool isManifoldType() { return _isManifoldType; }
+
+		Expression tangentVecTy(Scope sc) { return null; }
+	}
+
 	// semantic information
 	bool constLookup=true;
 	bool byRef=false;
@@ -469,6 +481,19 @@ class Identifier: Expression{
 			return aggrTy.isSubtypeImpl(rhs);
 		}
 		return super.isSubtypeImpl(rhs);
+	}
+
+	static if(language==dp){
+		override @property bool isManifoldType() { 
+			return type==manifoldTypeTy;
+		}
+
+		override Expression tangentVecTy(Scope sc) { 
+			if (isManifoldType) {
+				return tangentVectorTy(this, sc);
+			}
+			return null; 
+		}
 	}
 
 	// semantic information:

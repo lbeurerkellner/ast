@@ -3449,22 +3449,10 @@ static if (language==dp) Expression manifoldMemberSemantic(Expression target, st
 				return res;
 			}
 
-			// handle type variables
-			if (auto ident = cast(Identifier)target) {
-				if ((cast(ManifoldTypeTy)targetType) !is null) {
-					if (memberName=="tangentVector")
-						return tangentVectorTy(target, sc);
-				}
-			}
-
 			// handle direct type references
-			auto elementType = typeOrDataType(target);
-			assert(!!elementType);
-
-			if (auto manifoldImpl = elementType.manifold(sc)) {	
-				if (memberName == "tangentVector") {
-					return tangentVectorTy(elementType, sc);
-				}
+			if (auto tv = target.tangentVecTy(sc)) {	
+				if (memberName == "tangentVector") 
+					return tangentVectorTy(target, sc);
 			}
 		}
 
@@ -3496,15 +3484,17 @@ static if (language==dp) Expression manifoldMemberSemantic(Expression target, st
 	// special case: type of target expression is type variable
 	if (auto typeVar=cast(Identifier)target.type) {
 		if (cast(ManifoldTypeTy)typeVar.type) {
+			auto tv = typeVar.tangentVecTy(sc);
 			if (memberName=="tangentVector") {
-				return tangentVectorTy(target, sc);
+				return tv;
 			} else {
+				// other manifold members need to be resolved dynamically at runtime
 				auto fe = new FieldExp(target, new Identifier(memberName));
 				if (memberName == "tangentZero") {
-					fe.type=productTy([], [], unit, tangentVectorTy(target, sc), 
+					fe.type=productTy([], [], unit, tv, 
 						false, true, Annotation.none, true);
 				} else if (memberName == "move") {
-					fe.type=productTy([true], ["along"], tangentVectorTy(target, sc), unit, false, false, Annotation.none, true);
+					fe.type=productTy([true], ["along"], tv, unit, false, false, Annotation.none, true);
 				} else {
 					assert(false, "invalid manifold member name " ~ memberName);
 				}
@@ -4382,8 +4372,10 @@ static if(language==dp) bool hasManifoldImpl(Expression e, Scope sc) {
 		if (auto aggrty = cast(AggregateTy)ty) {
 			return aggrty.isParameterized;
 		}
-		return ty.manifold(sc) !is null;
+		return ty.isManifoldType;
 	} else if (e.type==manifoldTypeTy) {
+		return true;
+	} else if (e.isManifoldType) {
 		return true;
 	}
 	return false;
@@ -4443,7 +4435,7 @@ static if(language==dp) ProductTy pullbackTy(string name, ProductTy ftype, Scope
 		return null;
 	}
 
-	Manifold[] manifoldDomTypes = [];
+	Expression[] returnTangentVecTys = [];
 
 	foreach(domType; domTypes) {
 		// malformed ftype
@@ -4455,25 +4447,25 @@ static if(language==dp) ProductTy pullbackTy(string name, ProductTy ftype, Scope
 			return null;
 		}
 
-		auto manifoldDom = domType.manifold(sc);
+		auto tangentVecTy = domType.tangentVecTy(sc);
 
-		if (manifoldDom is null) {
+		if (tangentVecTy is null) {
 			// parameterised AggregateTy return types are also fine
 			if (auto aggrty = cast(AggregateTy)domType) {
 				if (aggrty.isParameterized) {
 					// use type-constraint param[A] manifold
-					manifoldDom = parameterSetTy(aggrty, sc).manifold(sc);
+					tangentVecTy = parameterSetTy(aggrty, sc).tangentVecTy(sc);
 				}
 			}
 		}
 
-		if (manifoldDom is null) {
+		if (tangentVecTy is null) {
 			sc.error(format("failed to determine pullback signature for function %s with" ~ 
 				" non-differentiable return type %s.", name, domType.toString), errNode.loc);
 			return null;
 		}
 
-		manifoldDomTypes ~= [manifoldDom];
+		returnTangentVecTys ~= [tangentVecTy];
 	}
 
 	foreach(tupIdx, codTuple; codTuples) {
@@ -4508,7 +4500,7 @@ static if(language==dp) ProductTy pullbackTy(string name, ProductTy ftype, Scope
 	bool[] squareDomIsTuple = codTuples.map!(t => t.length > 1).array;
 
 	auto pullbackParamNames = ["v"];
-	auto pullbackDom = tupleTyIfRequired(manifoldDomTypes.map!(m => m.tangentVecTy).array);
+	auto pullbackDom = tupleTyIfRequired(returnTangentVecTys);
 
 	Expression pullbackCod;
 	Expression[] pullbackCodComponents;
@@ -4600,8 +4592,8 @@ static if(language==dp) Expression[][] collectCompleteFunTyDom(FunTy ftype) {
 }
 
 static if(language==dp) Expression binaryPullbackTy(BinaryPullbackCallExp binaryPullbackCallExp, Scope sc) {
-	auto domT1 = cast(Type)binaryPullbackCallExp.e1.type;
-	auto domT2 = cast(Type)binaryPullbackCallExp.e2.type;
+	auto domT1 = binaryPullbackCallExp.e1.type;
+	auto domT2 = binaryPullbackCallExp.e2.type;
 
 	Expression[] tangentCod;
 
@@ -4611,8 +4603,8 @@ static if(language==dp) Expression binaryPullbackTy(BinaryPullbackCallExp binary
 			sc.error(format("failed to determine pullback type for binary operation %s with" ~ 
 				" non-handled operand type %s.", binaryPullbackCallExp.op, dom), binaryPullbackCallExp.loc);
 			binaryPullbackCallExp.sstate = SemState.error;
-		} else if (auto m = dom.manifold(sc)) {
-			tangentCod ~= m.tangentVecTy; 
+		} else if (auto tv = dom.tangentVecTy(sc)) {
+			tangentCod ~= tv;
 		} else {
 			// non-differentiable operands have unit tangent vector type
 			tangentCod ~= unit;
