@@ -94,7 +94,7 @@ int getLbp(TokenType type) pure{ // operator precedence
 	case Tok!"-",Tok!"+",Tok!"!",Tok!"~":
 		return 140;  */
 	case Tok!"^":  return 150; // power
-	case Tok!"grad", Tok!"init", Tok!"pull":
+	case Tok!"grad", Tok!"pull":
 		return 159;
 	// postfix operators
 	case Tok!".",Tok!"++",Tok!"--":
@@ -104,7 +104,7 @@ int getLbp(TokenType type) pure{ // operator precedence
 	case Tok!"unparam":
 		return 161;
 	}
-	case Tok!"noparam", Tok!"nondiff":
+	case Tok!"noparam", Tok!"nondiff", Tok!"init":
 		return 119;
 	//case Tok!"i": return 45; //infix
 	default: return -1;

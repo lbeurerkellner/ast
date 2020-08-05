@@ -1272,7 +1272,7 @@ class ProductTy: Type{
 			}else d=addp(isConst[0],dom,del);
 			static if(language==dp) {
 				if (!isDifferentiable) d = "nondiff " ~ d;
-				d = (isParameterized ? "param" : "noparam") ~ " " ~ d;
+				d = (isParameterized ? (isInitialized ? "init" : "param") : "noparam") ~ " " ~ d;
 			}
 			static if(language==silq) auto arrow=(isClassical?"!":"")~"→";
 			else enum arrow="→";
@@ -1479,9 +1479,14 @@ class ProductTy: Type{
 		}
 		static if(language==dp) {
 			if (!isDifferentiable&&r.isDifferentiable) return false;
+			
 			bool lRequiresInitialization = isParameterized&&!isInitialized;
 			bool rRequiresInitialization = r.isParameterized&&!r.isInitialized;
 			if (lRequiresInitialization!=rRequiresInitialization) return false;
+
+			bool lHasParams = isParameterized&&isInitialized;
+			bool rHasParams = r.isParameterized&&r.isInitialized;
+			if (rHasParams&&!lHasParams) return false;
 		}
 		if(annotation<r.annotation||!isClassical&&r.isClassical) return false;
 		auto name=freshName("x",r);

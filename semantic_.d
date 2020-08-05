@@ -3154,18 +3154,12 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 		propErr(initExp.target, initExp);
 		initExp.type=unit;
 
-		if (auto funType = cast(FunTy)initExp.target.type) {
-			if (!funType.isParameterized) {
-				sc.error(format("cannot initialize non-parameterized function of type %s",funType.toString),initExp.target.loc);
-				initExp.sstate=SemState.error;
-				return initExp;
-			}
-
-			auto initialisedType = productTy(funType.isConst, funType.names, funType.dom, funType.cod, funType.isSquare, 
-				funType.isTuple, funType.annotation, funType.isClassical, true, true, funType.isDifferentiable);
-			initExp.type = initialisedType;
+		if (auto ftype = cast(FunTy)initExp.target.type) {
+			initExp.type = init(ftype, initExp, sc);
+		} else if (auto ftype=cast(FunTy)initExp.target) {
+			return init(ftype, initExp, sc);
 		} else {
-			sc.error(format("cannot initialize expressions of type %s",initExp.target.type),initExp.target.loc);
+			sc.error(format("cannot initialize expressions of type %s", initExp.target.type),initExp.target.loc);
 			initExp.sstate=SemState.error;
 		}
 		return initExp;
@@ -3273,6 +3267,18 @@ static if (language==dp) FieldExp parameterSetParamMemberSemantic(Expression con
 	fe.sstate = SemState.completed;
 
 	return fe;
+}
+
+// init operator on the type-level
+static if (language==dp) ProductTy init(ProductTy ftype, InitExp initExp, Scope sc) {
+	if (!ftype.isParameterized) {
+		sc.error(format("cannot initialize non-parameterized function of type %s",ftype.toString),initExp.target.loc);
+		initExp.sstate=SemState.error;
+		return ftype;
+	}
+
+	return productTy(ftype.isConst, ftype.names, ftype.dom, ftype.cod, ftype.isSquare, 
+		ftype.isTuple, ftype.annotation, ftype.isClassical, true, true, ftype.isDifferentiable);
 }
 
 // unparam operator on the type-level
