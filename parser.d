@@ -18,6 +18,11 @@ enum binaryOps=mixin({string r="[";
 		return r~"]";
 	}());
 
+enum FunctionAnnotation {
+	none,
+	noparam
+}
+
 bool isRelationalOp(TokenType op){
 	switch(op){
 		// relational operators
@@ -89,14 +94,14 @@ int getLbp(TokenType type) pure{ // operator precedence
 	case Tok!"-",Tok!"+",Tok!"!",Tok!"~":
 		return 140;  */
 	case Tok!"^":  return 150; // power
-	case Tok!"grad":
+	case Tok!"grad", Tok!"init", Tok!"pull":
 		return 159;
 	// postfix operators
 	case Tok!".",Tok!"++",Tok!"--":
 	case Tok!"(", Tok!"[": // function call and indexing
 		return 160;
 	static if(language==dp) {
-	case Tok!"pull", Tok!"init", Tok!"unparam":
+	case Tok!"unparam":
 		return 161;
 	}
 	case Tok!"noparam", Tok!"nondiff":
@@ -457,7 +462,7 @@ struct Parser{
 						case Tok!"{",Tok!"⇒",Tok!"↦",Tok!"=>":
 						static if(language==silq) case Tok!"lifted",Tok!"qfree",Tok!"mfree":{}
 							restoreState(state);
-							return parseLambdaExp();
+							return parseLambdaExp!(false, FunctionAnnotation.noparam)();
 						default: break;
 					}
 					restoreState(state);
@@ -522,7 +527,7 @@ struct Parser{
 					return res=New!PullExp(parseExpression(lbp!(Tok!"pull")));
 				case Tok!"init":
 					expect(Tok!"init");
-					return res=New!InitExp(parseExpression(lbp!(Tok!"pull")));
+					return res=New!InitExp(parseExpression(lbp!(Tok!"init")));
 				case Tok!"grad":
 					expect(Tok!"grad");
 					return res=New!(UnaryExp!(Tok!"grad"))(parseExpression(lbp!(Tok!"grad")));
@@ -543,11 +548,12 @@ struct Parser{
 		}
 	}
 
-	LambdaExp parseLambdaExp(bool semicolon=false)(){
+	LambdaExp parseLambdaExp(bool semicolon=false, FunctionAnnotation funAnnotation=FunctionAnnotation.none)(){
 		mixin(SetLoc!LambdaExp);
 		static if(language==silq) if(util.among(ttype,Tok!"lambda",Tok!"λ")) nextToken(); // TODO: add support in PSI as well?
-		auto fd = parseFunctionDef!(true,semicolon);
-		fd.isParameterized=false;
+		auto fd = parseFunctionDef!(true,semicolon,funAnnotation)();
+		if (funAnnotation==FunctionAnnotation.noparam)
+			fd.isParameterized=false;
 		return res=New!LambdaExp(fd);
 	}
 	
@@ -720,7 +726,7 @@ struct Parser{
 			static if(language==psi) case Tok!"cobserve": return parseCObserve();
 			static if(language==silq) case Tok!"forget": return parseForget();
 			static if (language==dp) case Tok!"pullback": {
-				if (aheadLooksLikePullbackDecl()) return parseFunctionDef();
+				if (aheadLooksLikePullbackDecl()) return parseFunctionDef!(false, true)();
 				else break;
 			}
 			static if (language==dp) case Tok!"noparam": {
@@ -784,7 +790,7 @@ struct Parser{
 	}
 	static if (language==dp) FunctionDef parseNoParamFunctionDef() {
 		expect(Tok!"noparam");
-		auto fd = parseFunctionDef();
+		auto fd = parseFunctionDef!(false,true,FunctionAnnotation.noparam)();
 		fd.isParameterized=false;
 		return fd;
 	}
@@ -794,7 +800,7 @@ struct Parser{
 	static if(language==dp) bool aheadLooksLikeNoParamFunDef() {
 		return ttype==Tok!"noparam" && peek.type==Tok!"def";
 	}
-	FunctionDef parseFunctionDef(bool lambda=false,bool semicolon=!lambda)(){
+	FunctionDef parseFunctionDef(bool lambda=false,bool semicolon=!lambda,FunctionAnnotation funAnnotation=FunctionAnnotation.none)(string pullbackName=""){
 		mixin(SetLoc!FunctionDef);
 		static if (language==dp) bool isPullback = false;
 		static if(!lambda){
@@ -848,7 +854,7 @@ struct Parser{
 			Expression e;
 			if(ttype==Tok!"("||ttype==Tok!"["){
 				if(annotation==Annotation.none) annotation=deterministic;
-				e=parseLambdaExp!semicolon();
+				e=parseLambdaExp!(semicolon,funAnnotation)();
 			}else{
 				nextToken();
 				e=parseExpression(rbp!(Tok!(",")));
@@ -863,7 +869,7 @@ struct Parser{
 			body_=parseCompoundExp();
 		}
 		bool isTuple=params[1]||params[0].length!=1;
-		
+
 		static if (language==dp) res=New!FunctionDef(name,cast(Parameter[])params[0],isTuple,isPullback,ret,body_);
 		else res=New!FunctionDef(name,cast(Parameter[])params[0],isTuple,ret,body_);
 		
@@ -874,6 +880,8 @@ struct Parser{
 			if (isPullback) {
 				res.isParameterized=false;
 				res.isDifferentiable=false;
+			} else if (funAnnotation==FunctionAnnotation.noparam) {
+				res.isParameterized=false;
 			}
 		}
 

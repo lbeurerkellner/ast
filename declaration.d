@@ -127,6 +127,7 @@ class PointWiseFunctionDef: FunctionDef {
 }
 
 Identifier pullbackDefName(Identifier primalName) {
+	assert(primalName, text("cannot create pullback name for null identifier"));
 	return new Identifier("pullback " ~ primalName.name);
 }
 
