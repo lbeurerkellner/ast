@@ -1875,9 +1875,7 @@ Expression arithmeticType(bool preserveBool)(Expression t1, Expression t2){
 		return joinTypes(t1,t2);
 	}
 	t1=t1.eval(); t2=t2.eval();
-	if (cast(VectorTy)t1||cast(VectorTy)t2) {
-		return broadcastedType!(preserveBool)(t1, t2);
-	}
+	if (cast(VectorTy)t1||cast(VectorTy)t2) return broadcastedType!(preserveBool)(t1, t2);
 	if(!(isNumeric(t1)&&isNumeric(t2))) return null;
 	auto r=joinTypes(t1,t2);
 	static if(!preserveBool){
@@ -2697,7 +2695,7 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 		}
 	}
 
-	Expression handleBinary(alias determineType)(string name,ABinaryExp e,ref Expression e1,ref Expression e2){
+	Expression handleBinary(alias determineType)(string name,ABinaryExp e,ref Expression e1,ref Expression e2, bool commutative=false){
 		Expression processedE1=expressionSemantic(e1,sc,ConstResult.yes);
 		propErr(processedE1,e);
 		e.e1 = processedE1;
@@ -2725,6 +2723,11 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 				if (t1.supportsBinaryOperatorImpl(e.opRep, t2)) {
 					e.type = meetTypes(processedE1.type, processedE2.type);
 				}
+				// check for scalar commutative operations
+				if (commutative&&(isNumeric(t1))) {
+					// also try operator check with switched operands, since op is commutative
+					if (t2.supportsBinaryOperatorImpl(e.opRep, t1)) e.type = meetTypes(processedE2.type, processedE1.type);
+				}
 			}
 			if(!e.type){
 				sc.error(format("incompatible types %s and %s for %s",processedE1.type,processedE2.type,name),e.loc);
@@ -2736,7 +2739,7 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 	if(auto ae=cast(AddExp)expr) return expr=handleBinary!(arithmeticType!false)("addition",ae,ae.e1,ae.e2);
 	if(auto ae=cast(SubExp)expr) return expr=handleBinary!subtractionType("subtraction",ae,ae.e1,ae.e2);
 	if(auto ae=cast(NSubExp)expr) return expr=handleBinary!nSubType("natural subtraction",ae,ae.e1,ae.e2);
-	if(auto ae=cast(MulExp)expr) return expr=handleBinary!(arithmeticType!true)("multiplication",ae,ae.e1,ae.e2);
+	if(auto ae=cast(MulExp)expr) return expr=handleBinary!(arithmeticType!true)("multiplication",ae,ae.e1,ae.e2,true);
 	if(auto ae=cast(DivExp)expr) return expr=handleBinary!divisionType("division",ae,ae.e1,ae.e2);
 	if(auto ae=cast(IDivExp)expr) return expr=handleBinary!iDivType("integer division",ae,ae.e1,ae.e2);
 	if(auto ae=cast(ModExp)expr) return expr=handleBinary!moduloType("modulo",ae,ae.e1,ae.e2);
