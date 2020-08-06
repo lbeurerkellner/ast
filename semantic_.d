@@ -3017,11 +3017,8 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 		CallExp ce=cast(CallExp)pullExp.target;
 		if (!ce) ce = isSquareCallExp(pullExp.target);
 
-		if (!ce) {
-			sc.error(format("the pull operator can only be applied to function call expressions (e.g. pull f[x](v)), not %s",
-				pullExp.target), pullExp.target.loc);
-			pullExp.sstate = SemState.error;
-			return pullExp;
+		if (!ce) { // target should be a differentiable function reference (e.g. `pull f`)
+			return pullExpSemantic(pullExp, expressionSemantic(pullExp.target, sc, constResult), sc);
 		}
 		
 		if (!ce.isSquare) { // ce is (v) of f[x](v)
@@ -3116,6 +3113,12 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 		
 		auto prodTy = cast(ProductTy)initializedFunctionExp.f.type;
 		if (!prodTy) return initializedFunctionExp;
+
+		if (!prodTy.isParameterized) {
+			sc.error("cannot initialize non-parameterized function", expr.loc);
+			expr.sstate=SemState.error;
+			return expr;
+		}
 		
 		initializedFunctionExp.type = productTy(prodTy.isConst, prodTy.names, 
 			prodTy.dom, prodTy.cod, prodTy.isSquare, prodTy.isTuple, prodTy.annotation, 
@@ -3271,6 +3274,7 @@ static if (language==dp) FieldExp parameterSetParamMemberSemantic(Expression con
 
 // init operator on the type-level
 static if (language==dp) ProductTy init(ProductTy ftype, InitExp initExp, Scope sc) {
+	assert(!ftype.isInitialized, text("cannot reinitialize ", initExp.target));
 	if (!ftype.isParameterized) {
 		sc.error(format("cannot initialize non-parameterized function of type %s",ftype.toString),initExp.target.loc);
 		initExp.sstate=SemState.error;
@@ -3283,6 +3287,7 @@ static if (language==dp) ProductTy init(ProductTy ftype, InitExp initExp, Scope 
 
 // unparam operator on the type-level
 static if (language==dp) ProductTy unparam(ProductTy prodTy, UnparamExp unparamExp, Scope sc) {
+	assert(prodTy.names.length==0||prodTy.names[$-1]!="θ", text(" cannot unparam ", unparamExp));
 	auto argtys = iota(prodTy.names.length).map!(i => prodTy.argTy(i)).array;
 	auto extendedDomElements = argtys ~ cast(Expression[])[parameterSetTy(unparamExp.e, sc)];
 	return productTy(prodTy.isConst ~ [true], prodTy.names ~ ["θ"], 
@@ -4563,9 +4568,14 @@ static if(language==dp) ProductTy pullbackTy(string name, ProductTy ftype, Scope
 	Expression pullbackCod;
 	Expression[] pullbackCodComponents;
 	foreach(idx, param; pullbackCodPrimalParamName) {
-			auto id = new Identifier(param);
-			id.type = pullbackCodTangentTypes[idx];
-			pullbackCodComponents ~= [tangentVectorTy(id, sc)];
+			auto type = pullbackCodTangentTypes[idx];
+			Expression bound = new Identifier(param);
+			bound.type = type;
+			if (auto paramFtype=cast(FunTy)type) {
+				bound = new ParameterSetHandleExp(bound);
+				bound.type = parameterSetTy(bound, sc);
+			}
+			pullbackCodComponents ~= [tangentVectorTy(bound, sc)];
 	}
 
 	if (pullbackCodComponents.length == 1) {

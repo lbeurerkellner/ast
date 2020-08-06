@@ -1489,7 +1489,7 @@ class ProductTy: Type{
 			if (rHasParams&&!lHasParams) return false;
 		}
 		if(annotation<r.annotation||!isClassical&&r.isClassical) return false;
-		auto name=freshName("x",r);
+		auto name=freshName("`x",r);
 		auto vars=varTy(name,r.dom);
 		auto lCod=tryApply(vars,isSquare);
 		auto rCod=r.tryApply(vars,isSquare);
@@ -1591,6 +1591,12 @@ class ProductTy: Type{
 		static if(language==dp) return productTy(isConst,names,ndom,ncod,isSquare,isTuple,
 			annotation,isClassical_, isParameterized, isInitialized, isDifferentiable, isPullbackOf);
 		else return productTy(isConst,names,ndom,ncod,isSquare,isTuple,annotation,isClassical_);
+	}
+
+	override @property bool isManifoldType() { return isParameterized&&isInitialized; }
+
+	override Expression tangentVecTy(Scope sc) {
+		return tangentVectorTy(parameterSetTopTy(sc), sc);
 	}
 }
 
@@ -2001,6 +2007,12 @@ class ParameterSetTy : Type {
 
 		return new Manifold(this, moveOpDef, tangentVectorTy(this, sc), tangentZeroDef);
 	}
+
+	override int freeVarsImpl(scope int delegate(string) dg){ 
+		if (auto res=target.freeVarsImpl(dg)) return res;
+		if (auto t=target.type) return t.freeVarsImpl(dg);
+		return 0;
+	}
 }
 
 ParameterSetTy parameterSetTy(Expression target, Scope sc){
@@ -2154,7 +2166,9 @@ class TangentVectorTy : Type {
 		}
 	}
 	override int freeVarsImpl(scope int delegate(string) dg){ 
-		return bound.freeVarsImpl(dg);
+		if (auto res=bound.freeVarsImpl(dg)) return res;
+		if (auto t=bound.type) return t.freeVarsImpl(dg);
+		return 0;
 	}
 	override Expression substituteImpl(Expression[string] subst){ 
 		return tangentVectorTy(bound.substitute(subst), sc);
