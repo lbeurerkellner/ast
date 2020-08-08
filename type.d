@@ -1450,10 +1450,12 @@ class ProductTy: Type{
 				exp.type=tdom[i];
 				exp.sstate=SemState.completed;
 				subst[n]=exp.eval();
+				subst["#"~to!string(i)]=subst[n];
 			}
 		}else{
 			assert(names.length==1);
 			subst[names[0]]=arg;
+			subst["#0"]=arg;
 		}
 		return cod.substitute(subst);
 	}
@@ -2174,6 +2176,13 @@ class TangentVectorTy : Type {
 	override Expression substituteImpl(Expression[string] subst){ 
 		return tangentVectorTy(bound.substitute(subst), sc);
 	}
+	override bool supportsBinaryOperatorImpl(string op, Expression operand) {
+		// addition 
+		if (op=="+"&&isSubtype(operand, this)) return true;
+		// scalar multiplication
+		if (op=="·"&&isSubtype(operand, ℝ(true))) return true;
+		return super.supportsBinaryOperatorImpl(op, operand);
+	}
 }
 
 class ParameterSetTangentVectorTy: TangentVectorTy {
@@ -2207,17 +2216,6 @@ class ParameterSetTangentVectorTy: TangentVectorTy {
 		if (isSubtype(r, ℝ(true))) return this;
 
 		return super.combineTypesImpl(r, meet);
-	}
-	
-	override bool supportsBinaryOperatorImpl(string op, Expression operand) {
-		// parameter set addition
-		if (auto psetTvTy = cast(ParameterSetTangentVectorTy)operand) {
-			if (op=="+") return true;
-			return this.bound.supportsBinaryOperatorImpl(op, psetTvTy.bound);
-		}
-		// scalar multiplication
-		if (op=="·"&&isSubtype(operand, ℝ(true))) return true;
-		return super.supportsBinaryOperatorImpl(op, operand);
 	}
 }
 
@@ -2270,4 +2268,34 @@ class DynamicTy : AnyTy {
 DynamicTy dynamicTy(bool classical=true){
 	static if(language==silq) return memoize!((bool classical)=>new DynamicTy(classical))(classical);
 	else return memoize!(()=>new DynamicTy(true));
+}
+
+/// nograd type represents the singular value (`nograd`) returned by a pullback for non-differentiable parameters
+class NoGradTy : Type {
+	private this(){}
+	override NoGradTy copyImpl(CopyArgs args){
+		return this;
+	}
+	override string toString(){
+		static if(language==silq) return classical?"!nograd":"nograd";
+		else return "nograd";
+	}
+	override bool opEquals(Object o){
+		return !!cast(NoGradTy)o;
+	}
+	override bool isClassical(){
+		return true;
+	}
+	override bool hasClassicalComponent(){
+		return true;
+	}
+	override Expression evalImpl(Expression ntype){ return this; }
+	mixin VariableFree;
+	override int componentsImpl(scope int delegate(Expression) dg){
+		return 0;
+	}
+}
+
+NoGradTy noGradTy(){
+	return memoize!(()=>new NoGradTy())();
 }

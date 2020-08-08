@@ -582,6 +582,10 @@ Expression builtIn(Identifier id,Scope sc){
 		id.type=typeTy;
 		return parameterSetTopTy(sc);
 	}
+	case "nograd": {
+		id.type=typeTy;
+		return new NoGradExp();
+	}
 	default: return null;
 	}
 	id.type=t;
@@ -2722,9 +2726,8 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 				auto t1 = processedE1.type.eval(); auto t2 = processedE2.type.eval();
 				if (t1.supportsBinaryOperatorImpl(e.opRep, t2)) {
 					e.type = meetTypes(processedE1.type, processedE2.type);
-				}
-				// check for scalar commutative operations
-				if (commutative&&(isNumeric(t1))) {
+				} else if (commutative&&(isNumeric(t1))) {
+					// check for scalar commutative operations
 					// also try operator check with switched operands, since op is commutative
 					if (t2.supportsBinaryOperatorImpl(e.opRep, t1)) e.type = meetTypes(processedE2.type, processedE1.type);
 				}
@@ -3163,7 +3166,8 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 		if (auto ftype = cast(FunTy)initExp.target.type) {
 			initExp.type = init(ftype, initExp, sc);
 		} else if (auto ftype=cast(FunTy)initExp.target) {
-			return init(ftype, initExp, sc);
+			initExp.type = typeTy;
+			return expr=init(ftype, initExp, sc);
 		} else {
 			sc.error(format("cannot initialize expressions of type %s", initExp.target.type),initExp.target.loc);
 			initExp.sstate=SemState.error;
@@ -3174,6 +3178,9 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 		paramSetHandleExp.target = expressionSemantic(paramSetHandleExp.target, sc, ConstResult.no);
 		paramSetHandleExp.type = parameterSetTy(paramSetHandleExp.target, sc);
 		return paramSetHandleExp;
+	}
+	if (auto nogradExp=cast(NoGradExp)expr) {
+		return expr;
 	}
 	if(expr.kind=="expression") sc.error("unsupported",expr.loc);
 	else sc.error(expr.kind~" cannot appear within an expression",expr.loc);
@@ -3547,10 +3554,9 @@ static if (language==dp) Expression manifoldMemberSemantic(Expression target, st
 				// other manifold members need to be resolved dynamically at runtime
 				auto fe = new FieldExp(target, new Identifier(memberName));
 				if (memberName == "tangentZero") {
-					fe.type=productTy([], [], unit, tv, 
-						false, true, Annotation.none, true);
+					fe.type=productTy([], [], unit, tangentVectorTy(target, sc), false, true, Annotation.none, true);
 				} else if (memberName == "move") {
-					fe.type=productTy([true], ["along"], tv, unit, false, false, Annotation.none, true);
+					fe.type=productTy([true], ["along"], tangentVectorTy(target, sc), unit, false, false, Annotation.none, true);
 				} else {
 					assert(false, "invalid manifold member name " ~ memberName);
 				}
@@ -4102,6 +4108,7 @@ Expression typeSemantic(Expression expr,Scope sc)in{assert(!!expr&&!!sc);}body{
 	}
 	auto e=expressionSemantic(expr,sc,ConstResult.no);
 	if(!e) return null;
+	static if(language==dp) if(e.type==noGradTy) return noGradTy;
 	if(e.type.isTypeTy) return e;
 	if(expr.sstate!=SemState.error){
 		auto id=cast(Identifier)expr;
@@ -4416,24 +4423,8 @@ static if(language==dp) private Expression prependingToDomain(Expression first, 
     return tupleTy([first, dom]);
 }
 
-static if(language==dp) Type[] tupleTyComponents(Expression type, bool unfoldVecs=true) {
-	if (auto tupleTy=cast(TupleTy)type) {
-		return tupleTy.types.map!(t => typeOrDataType(t)).array;
-	}
-	if (unfoldVecs) {
-		// unfold VectorTy of constant .num
-		if (auto vecTy=cast(VectorTy)type) {
-			if (auto lit=cast(LiteralExp)vecTy.num) {
-				if (lit.lit.type==Tok!"0") {
-					if (auto i=to!ulong(lit.lit.str)) {
-						return cast(Type[])iota(0, i).map!(i => vecTy.next).array;
-					}
-				}
-			}
-		}
-	}
-	if (type==unit) return [];
-	return [typeOrDataType(type)];
+static if(language==dp) Expression[] argTys(ProductTy ftype) {
+	return iota(ftype.names.length).map!(i => ftype.argTy(i)).array;
 }
 
 static if(language==dp) Expression tupleTyIfRequired(T)(T[] types) {
@@ -4488,7 +4479,8 @@ static if(language==dp) ProductTy pullbackTy(FunctionDef primalFd, Scope sc) {
         return null;
     }
 
-	return pullbackTy(primalFd.name.name, primalFd.ftype, sc, primalFd);
+	auto name = primalFd.name !is null ? primalFd.name.name : primalFd.toString;
+	return pullbackTy(name, primalFd.ftype, sc, primalFd);
 }
 
 static if(language==dp) ProductTy pullbackTy(string name, ProductTy ftype, Scope sc, Node errNode) {
@@ -4496,7 +4488,8 @@ static if(language==dp) ProductTy pullbackTy(string name, ProductTy ftype, Scope
 	bool[][] isConst = collectAllParametersIsConst(ftype);
 	
 	// switch around dom/cod since the pullback goes the other way round
-	Type[] domTypes = tupleTyComponents(findFinalFunTyInSquaredFunTy(ftype).cod);
+	Expression[] domTypes = [findFinalFunTyInSquaredFunTy(ftype).cod];
+	if (auto tupTy=cast(TupleTy)ftype.cod) domTypes = tupTy.types;
 	Expression[][] codTuples = collectCompleteFunTyDom(ftype);
 
 	// keep track of all differentiable types of co-domain/domain and their primal names
@@ -4555,11 +4548,12 @@ static if(language==dp) ProductTy pullbackTy(string name, ProductTy ftype, Scope
 		}
 		// exclude parameters of non-differentiable type
 		if (!hasManifoldImpl(codType, sc)) {
-			continue;
+			pullbackCodTangentTypes ~= [noGradTy];
+			pullbackCodPrimalParamName ~= [paramNames[$-1][idx]];
+		} else {
+			pullbackCodTangentTypes ~= [codType];
+			pullbackCodPrimalParamName ~= [paramNames[$-1][idx]];
 		}
-		
-		pullbackCodTangentTypes ~= [codType];
-		pullbackCodPrimalParamName ~= [paramNames[$-1][idx]];
 	}
 	
 	auto pullbackSquareDoms = codTuples.map!(t => tupleTyIfRequired(t)).array;
@@ -4571,14 +4565,23 @@ static if(language==dp) ProductTy pullbackTy(string name, ProductTy ftype, Scope
 	Expression pullbackCod;
 	Expression[] pullbackCodComponents;
 	foreach(idx, param; pullbackCodPrimalParamName) {
-			auto type = pullbackCodTangentTypes[idx];
-			Expression bound = new Identifier(param);
-			bound.type = type;
-			if (auto paramFtype=cast(FunTy)type) {
-				bound = new ParameterSetHandleExp(bound);
-				bound.type = parameterSetTy(bound, sc);
-			}
-			pullbackCodComponents ~= [tangentVectorTy(bound, sc)];
+		if (param=="") param = "#"~to!string(idx);
+
+		auto type = pullbackCodTangentTypes[idx];
+
+		if (type==noGradTy) {
+			pullbackCodComponents ~= [noGradTy];
+			continue;
+		}
+
+		Expression bound = new Identifier(param);
+		bound.type = type;
+
+		if (auto paramFtype=cast(FunTy)type) {
+			bound = new ParameterSetHandleExp(bound);
+			bound.type = parameterSetTy(bound, sc);
+		}
+		pullbackCodComponents ~= [tangentVectorTy(bound, sc)];
 	}
 
 	if (pullbackCodComponents.length == 1) {
@@ -4641,14 +4644,10 @@ static if(language==dp) Expression[][] collectCompleteFunTyDom(FunTy ftype) {
 	if (ftype.isSquare) {
 		auto nextOrderFtype = cast(ProductTy)ftype.cod;
 		assert(!!nextOrderFtype);
-		if (ftype.names.length > 1) {
-			return [cast(Expression[])tupleTyComponents(ftype.dom, true)] ~ collectCompleteFunTyDom(nextOrderFtype);
-		} else {
-			return [[ftype.dom]]  ~ collectCompleteFunTyDom(nextOrderFtype);
-		}
+		return [argTys(ftype)] ~ collectCompleteFunTyDom(nextOrderFtype);
 	} else {
 		if (ftype.names.length > 1) {
-			return [cast(Expression[])tupleTyComponents(ftype.dom)];
+			return [argTys(ftype)];
 		} else {
 			return [[ftype.dom]];
 		}

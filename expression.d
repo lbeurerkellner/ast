@@ -1843,3 +1843,23 @@ class CommentExp: Expression {
 		return 0;
 	}
 }
+
+class NoGradExp: Expression {
+	this(){
+		this.type = noGradTy;
+	}
+	override NoGradExp copyImpl(CopyArgs args){
+		return new NoGradExp();
+	}
+	override string toString(){ return "nograd"; }
+
+	override string kind() { return "expression"; }
+
+	override Expression evalImpl(Expression ntype){
+		return this;
+	}
+	mixin VariableFree; // TODO
+	override int componentsImpl(scope int delegate(Expression) dg){
+		return 0;
+	}
+}
