@@ -40,6 +40,12 @@ class SimpleErrorHandler: ErrorHandler{
 	}
 }
 
+class NullErrorHandler: ErrorHandler{
+	override void error(lazy string err, Location loc){
+		// nop
+	}
+}
+
 enum underlineArrow  = "^";
 enum underlineStroke = "─";
 

@@ -2177,10 +2177,20 @@ class TangentVectorTy : Type {
 		return tangentVectorTy(bound.substitute(subst), sc);
 	}
 	override bool supportsBinaryOperatorImpl(string op, Expression operand) {
-		// addition 
+		// point-wise addition 
 		if (op=="+"&&isSubtype(operand, this)) return true;
 		// scalar multiplication
 		if (op=="·"&&isSubtype(operand, ℝ(true))) return true;
+		
+		// point-wise multiplication
+		if (op=="·"&&isSubtype(operand, this)) return true;
+		// point-wise division
+		if (op=="/"&&isSubtype(operand, this)) return true;
+		// scalar addition
+		if (op=="+"&&isSubtype(operand, ℝ(true))) return true;
+		// scalar division
+		if (op=="/"&&isSubtype(operand, ℝ(true))) return true;
+		
 		return super.supportsBinaryOperatorImpl(op, operand);
 	}
 }

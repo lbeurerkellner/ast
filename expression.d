@@ -756,7 +756,11 @@ string tupleToString(Expression e,bool isSquare){
 	return d[0]~str~d[1];
 }
 
+alias CompileTimeFunction = Expression function(Expression args);
+
 class CallExp: Expression{
+	static CompileTimeFunction[string] compileTimeFunctions;
+
 	Expression e;
 	Expression arg;
 	bool isSquare;
@@ -907,6 +911,15 @@ class CallExp: Expression{
 	override Expression evalImpl(Expression ntype){
 		auto ne=e.eval(), narg=arg.eval();
 		if(ne == e && narg == arg && ntype == type) return this;
+
+		if (auto id=cast(Identifier)ne) {
+			if (id.name in compileTimeFunctions) {
+				if (auto res = compileTimeFunctions[id.name](narg)) {
+					return res;
+				}
+			}
+		}
+
 		return new CallExp(ne,narg,isSquare,isClassical_);
 	}
 }
@@ -1792,6 +1805,10 @@ class ParameterSetIndexExp: IndexExp {
 		this.context = context;
 
 		this.type = dynamicTy;
+	}
+
+	override ParameterSetIndexExp copyImpl(CopyArgs args){
+		return new ParameterSetIndexExp(e.copy(args), parameter.copy(args), context !is null ? context.copy(args) : null);
 	}
 }
 

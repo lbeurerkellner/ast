@@ -466,7 +466,7 @@ Expression makeDeclaration(Expression expr,ref bool success,Scope sc, bool isPar
 		return fieldDeclExp;
 	}
 	if(expr.sstate!=SemState.error&&expr.loc.line!=0) {
-		sc.error("not a declaration: "~expr.toString()~" ",expr.loc);
+		sc.error(text("not a declaration: ", expr.toString(), " ", typeid(expr)),expr.loc);
 	}
 	expr.sstate=SemState.error;
 	success=false;
@@ -586,6 +586,10 @@ Expression builtIn(Identifier id,Scope sc){
 		id.type=typeTy;
 		return new NoGradExp();
 	}
+	case "dynamic": {
+		id.type=typeTy;
+		return dynamicTy(true);
+	}
 	default: return null;
 	}
 	id.type=t;
@@ -659,7 +663,7 @@ Expression nestedDeclSemantic(Expression e,Scope sc){
 		return fieldDeclSemantic(e,sc);
 	if(auto ce=cast(CommaExp)e) 
 		return expectFieldDeclSemantic(ce,sc);
-	sc.error("not a declaration",e.loc);
+	sc.error(text("not a declaration", " ", typeid(e)),e.loc, );
 	e.sstate=SemState.error;
 	return e;
 }
@@ -2719,7 +2723,8 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 		} else {
 			Expression processedE2=expressionSemantic(e2,sc,ConstResult.yes);
 			propErr(processedE2,e);
-			e.type = determineType(processedE1.type,processedE2.type);
+			if (processedE1.type&&processedE2.type)
+				e.type = determineType(processedE1.type,processedE2.type);
 			e.e2 = processedE2;
 			// check whether processedE1 explicitly supports the binary operator
 			if (!e.type&&processedE1.type&&processedE2.type) {
@@ -3089,6 +3094,8 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 	}
 	if (auto unparamExp=cast(UnparamExp)expr) {
 		unparamExp.e = expressionSemantic(unparamExp.e, sc, ConstResult.yes);
+		unparamExp.type = unit;
+		
 		ProductTy prodTy = cast(ProductTy)unparamExp.e.type;
 		if (!prodTy) {
 			sc.error(text("operator unparam can only be applied to function expressions, not expressions of type ", 
@@ -3368,6 +3375,10 @@ Type typeOrDataType(Expression e) {
 
 static if (language==dp) Expression parameterSetTyIndexSemantic(IndexExp idx, ParameterSetTy paramTy, Expression[] args, Scope sc) {
 	bool isValidBoundType(Expression bound) {
+		if (auto id=cast(Identifier)bound) {
+			// TODO: this is hack, we need some common supertype for all things parameterized
+			return id.type.isTypeTy;
+		}
 		// can only specialize param types using record types
 		return (cast(AggregateTy)typeOrDataType(bound)) !is null;
 	}
@@ -3858,8 +3869,14 @@ static if (language==dp) ManifoldDecl manifoldDeclSemantic(ManifoldDecl maniDecl
 		if (tangentVecTy is null) {
 			sc.error("manifold tangent vector must be a type", tangentVectorExp.loc);
 			tangentVectorExp.sstate = SemState.error;
-		} else {
-			// tangentVecTy = aliasTy(elementType.toString ~ ".tangentVector", tangentVecTy);
+		}
+
+		// check for minimal tangent vector arithmetic capabilities
+		if (arithmeticType!(true)(tangentVecTy, tangentVecTy) is null) {
+			sc.note("manifold tangent vectors which do not support addition may not be supported by automatic differentiation", tangentVectorExp.loc);
+		} 
+		if (arithmeticType!(true)(tangentVecTy, ℝ(true)) is null) {
+			sc.note("manifold tangent vectors which do not support scalar multiplication may not be supported by automatic differentiation", tangentVectorExp.loc);
 		}
 	}
 	// type check tangent zero declaration
@@ -3928,10 +3945,12 @@ static if (language==dp) ManifoldDecl manifoldDeclPresemantic(ManifoldDecl maniD
 			if (funDef.name.name == "move") {
 				// manifold members must always be non-parameterized
 				funDef.isParameterized = false;
+				funDef.isDifferentiable = false;
 				moveOpDecls ~= funDef;
 			} else if (funDef.name.name == "tangentZero") {
 				// manifold members must always be non-parameterized
 				funDef.isParameterized = false;
+				funDef.isDifferentiable = false;
 				tangentZeroDecls ~= funDef;
 			} else {
 				sc.error(text("not supported in manifold declaration ", e.toString, " (", typeid(e), ")"),e.loc);
