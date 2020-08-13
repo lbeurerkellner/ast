@@ -759,8 +759,6 @@ string tupleToString(Expression e,bool isSquare){
 alias CompileTimeFunction = Expression function(Expression args);
 
 class CallExp: Expression{
-	static CompileTimeFunction[string] compileTimeFunctions;
-
 	Expression e;
 	Expression arg;
 	bool isSquare;
@@ -913,14 +911,45 @@ class CallExp: Expression{
 		if(ne == e && narg == arg && ntype == type) return this;
 
 		if (auto id=cast(Identifier)ne) {
-			if (id.name in compileTimeFunctions) {
-				if (auto res = compileTimeFunctions[id.name](narg)) {
-					return res;
-				}
+			if (id.name == "floor") {
+				if (auto res = compileTimeFloor(narg)) return res;
 			}
 		}
 
 		return new CallExp(ne,narg,isSquare,isClassical_);
+	}
+
+	static Expression compileTimeFloor(Expression e) {
+		import std.math : floor;
+		try {
+			auto v = evalCompileTimeNumber(e);
+			return LiteralExp.makeInteger(to!long(floor(v)));
+		} catch (Exception e) {
+			return null;
+		}
+	}
+
+	static float evalCompileTimeNumber(Expression e) {
+		import std.exception, std.conv;
+
+		if (auto op=cast(BinaryExp!(Tok!"+"))e) {
+			return evalCompileTimeNumber(op.e1) + evalCompileTimeNumber(op.e2);
+		} else if (auto op=cast(BinaryExp!(Tok!"-"))e) {
+			return evalCompileTimeNumber(op.e1) - evalCompileTimeNumber(op.e2);
+		} else if (auto op=cast(BinaryExp!(Tok!"/"))e) {
+			return evalCompileTimeNumber(op.e1) / evalCompileTimeNumber(op.e2);
+		} else if (auto op=cast(BinaryExp!(Tok!"·"))e) {
+			return evalCompileTimeNumber(op.e1) * evalCompileTimeNumber(op.e2);
+		} else if (auto lit=cast(LiteralExp)e) {
+			switch (lit.lit.type) {
+				case Tok!".0i", Tok!".0fi", Tok!".0Li":
+            		return to!float(lit.lit.str);
+				default:
+					throw new Exception(text("cannot evaluate non-float literal ", e, " at compile time."));
+			}
+		} else {
+			throw new Exception(text("cannot evaluate ", e, " at compile time."));
+		}
 	}
 }
 
