@@ -3105,13 +3105,13 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 		}
 		if (!prodTy.isParameterized) {
 			sc.error(text("operator unparam can only be applied to parameterized function expressions, not ", 
-				prodTy.type), unparamExp.loc);
+				prodTy), unparamExp.loc);
 			unparamExp.sstate = SemState.error;
 			return unparamExp;
 		}
 		if (!prodTy.isInitialized) {
 			sc.error(text("operator unparam can only be applied to initialized parametered function expressions, not ", 
-				unparamExp.e), unparamExp.loc);
+				unparamExp.e.type), unparamExp.loc);
 			unparamExp.sstate = SemState.error;
 			return unparamExp;
 		}
@@ -3175,7 +3175,7 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 		} else if (auto ftype=cast(FunTy)initExp.target) {
 			initExp.type = typeTy;
 			return expr=init(ftype, initExp, sc);
-		} else {
+		} else if (initExp.target.sstate!=SemState.error) {
 			sc.error(format("cannot initialize expressions of type %s", initExp.target.type),initExp.target.loc);
 			initExp.sstate=SemState.error;
 		}
@@ -3723,6 +3723,16 @@ FunctionDef functionDefSemantic(FunctionDef fd,Scope sc){
 		vars[n]=[];
 	}
 	static if(language==dp) {
+		long numberOfCapturedInitializedFunctions = 0;
+		foreach(id; fd.captures) {
+			if (auto ftype=cast(FunTy)id.type) {
+				if (ftype.isInitialized) numberOfCapturedInitializedFunctions += 1;
+			}
+		}
+		if (numberOfCapturedInitializedFunctions>0&&!fd.isParameterized) {
+			sc.note("gradients of captured initialized functions will be lost when differentiating, declare function as param to capture gradients", fd.loc);
+		}
+
 		if (fd.name&&fd.name.name=="main") {
 			if (fd.isParameterized) {
 				sc.error("the main function cannot be parameterized (annotate as noparam def main)", fd.loc);
