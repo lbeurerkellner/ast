@@ -611,6 +611,15 @@ size_t numComponents(Expression t){
 
 class ArrayTy: Type{
 	Expression next;
+
+	override @property bool isManifoldType() {
+		if (auto n = next) {
+			return next.isManifoldType();
+		} else {
+			return false;
+		}
+	}
+
 	private this(Expression next)in{
 		assert(next.type.isTypeTy);
 	}body{
@@ -689,6 +698,51 @@ class ArrayTy: Type{
 	}
 	override int componentsImpl(scope int delegate(Expression) dg){
 		return dg(next);
+	}
+
+	override Expression tangentVecTy(Scope sc) {
+		Expression nextTangentVecTy = this.next.tangentVecTy(sc);
+		if (!nextTangentVecTy) return null;
+		// construct element-wise tangentVector
+		return arrayTy(nextTangentVecTy);
+	}
+
+	override Manifold manifoldImpl(Scope sc) {
+		Type nextType = cast(Type)this.next;
+		if (!nextType) {
+			return null;
+		}
+		Manifold nextManifold = nextType.manifoldImpl(sc);
+		if (!nextManifold) {
+			return null;
+		}
+		// construct element-wise tangentVector
+		Expression elementWiseTangentVecTy = tangentVecTy(sc);
+
+		Scope containerScope = nextManifold.manifoldDecl.declScope.parent;
+		// use internal ManifoldDeclScope w/o corresponding ManifoldDecl
+		auto declScope = new ManifoldDeclScope(containerScope, 
+			new ManifoldDecl(new Identifier("`"~this.toString), null));
+		declScope.decl.typeName = this;
+
+		// construct tangentZero 
+		auto elementWiseTangentVecZero = new FunctionDef(new Identifier("__arrayTy_tangentZero"), [], true, null, null);
+		// construct move operation
+		auto elementWiseMoveOpDef = new FunctionDef(new Identifier("__arrayTy_tangentZero"), [new Parameter(true, new Identifier("along"), elementWiseTangentVecTy)], true, null, null);
+
+		declScope.decl.tangentZeroDef = elementWiseTangentVecZero;
+		declScope.decl.moveOpDef = elementWiseMoveOpDef;
+		declScope.decl.tangentVecExp = elementWiseTangentVecTy;
+
+		// semantically process constructed manifold operations
+		foreach(ref op; [elementWiseTangentVecZero, elementWiseMoveOpDef]) {
+			op = cast(FunctionDef)presemantic(op, declScope);
+			op = functionDefSemantic(op, declScope);
+		}
+
+		auto pointWiseManifold = new Manifold(this, elementWiseMoveOpDef, elementWiseTangentVecTy, elementWiseTangentVecZero);
+		pointWiseManifold.manifoldDecl = declScope.decl;
+		return pointWiseManifold;
 	}
 }
 
@@ -939,7 +993,7 @@ VectorTy vectorTy(Expression next, Expression num)in{
 	assert(num && (
 		isSubtype(num.type,ℤt(true)) ||  
 		isSubtype(num.type,arrayTy(ℤt(true))
-	)));	   
+	)));
 }body{
 	if (isSubtype(num.type, arrayTy(ℕt(true)))) {
 		if (auto arrayExp = cast(ArrayExp)num) {

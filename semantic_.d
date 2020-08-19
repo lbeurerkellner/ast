@@ -1155,7 +1155,7 @@ Expression defineSemantic(DefineExp be,Scope sc){
 	auto r=de?de:be;
 	if(be.e2.type && be.e2.type.sstate==SemState.completed){
 		foreach(id;be.e2.type.freeIdentifiers){
-			assert(!!id.meaning);
+			assert(!!id.meaning, text("identifier ", id, " does not have a .meaning"));
 			typeConstBlock(id.meaning,be,sc);
 		}
 	}
@@ -2236,7 +2236,9 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 			}else return noMember();
 		}else if(auto vt=cast(VectorTy)fe.e.type){
 			if(fe.f.name=="length"){
-				return expr=expressionSemantic(vt.num.copy(),sc,ConstResult.no);// TODO: preserve semantic on clone
+				auto res = expressionSemantic(vt.num.copy(),sc,ConstResult.no);// TODO: preserve semantic on clone;
+				res.type = ℕt(true);
+				return expr=res;
 			}else return noMember();
 		}else if(auto r=builtIn(fe,sc)) return expr=r;
 		else return noMember();
@@ -2687,9 +2689,16 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 	Expression tensorTypeSemantic(Expression dtype, Expression shape, Scope sc) {
 		if (auto binExp = cast(BinaryExp!(Tok!"×"))shape) {
 			auto dimExprs = findDimExprs(binExp, sc);
-			foreach (dim; dimExprs) {
-				expressionSemantic(dim,sc,ConstResult.yes);
+			bool success=true;
+			foreach (ref dim; dimExprs) {
+				dim = expressionSemantic(dim,sc,ConstResult.yes);
+				if (!(isSubtype(dim.type,ℤt(true)) || isSubtype(dim.type,arrayTy(ℤt(true))))) {
+					sc.error("not a valid shape expression", dim.loc);
+					dim.sstate = SemState.error;
+					success=false;
+				}
 			}
+			if (!success) return null;
 			return tensorTy(dtype, dimExprs);
 		} else {
 			Expression type=expressionSemantic(dtype, sc, ConstResult.yes);
@@ -2836,7 +2845,7 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 		}
 		re.sstate=SemState.completed;
 		re.type=unit;
-		return re;
+		return expr=re;
 	}
 
 	if(auto pr=cast(BinaryExp!(Tok!"×"))expr){
@@ -3723,6 +3732,7 @@ FunctionDef functionDefSemantic(FunctionDef fd,Scope sc){
 		vars[n]=[];
 	}
 	static if(language==dp) {
+		// check for captured initialized functions
 		long numberOfCapturedInitializedFunctions = 0;
 		foreach(id; fd.captures) {
 			if (auto ftype=cast(FunTy)id.type) {
@@ -3733,12 +3743,15 @@ FunctionDef functionDefSemantic(FunctionDef fd,Scope sc){
 			sc.note("gradients of captured initialized functions will be lost when differentiating, declare function as param to capture gradients", fd.loc);
 		}
 
+		// check for main function
 		if (fd.name&&fd.name.name=="main") {
 			if (fd.isParameterized) {
 				sc.error("the main function cannot be parameterized (annotate as noparam def main)", fd.loc);
 				return fd;
 			}
 		}
+		
+		// check for pullbacks
 		if (fd.isPullback) {
 			fd=pullbackSemantic(fd, sc);
 		}
@@ -3797,7 +3810,7 @@ static if(language==dp) FunctionDef pullbackSemantic(FunctionDef fd, Scope sc) {
 	ProductTy pty = pullbackTy(primal, sc);
 	if (!pty) {
 		sc.error(format("failed to determine pullback signature for function %s with signature %s.", 
-			fd.primalName.toString, fd.ftype.toString), fd.loc);	
+			fd.primalName.toString, primal), fd.loc);	
 		return fd;
 	}
 	ProductTy fty = fd.ftype;
@@ -4481,11 +4494,6 @@ static if(language==dp) bool hasManifoldImpl(Expression e, Scope sc) {
 }
 
 static if(language==dp) ProductTy pullbackTy(FunctionDef primalFd, Scope sc) {
-	// skip built-in functions
-    if (primalFd.body_ is null) {
-        return null;
-    }
-
     // skip manifold member operations
     if (primalFd.isManifoldOp) {
         //writeln(format("Skipping pullback generation for manifold member: %s", primalFd.name.toString));
@@ -4548,8 +4556,10 @@ static if(language==dp) ProductTy pullbackTy(string name, ProductTy ftype, Scope
 		auto tangentVecTy = domType.tangentVecTy(sc);
 
 		if (tangentVecTy is null) {
+			AggregateTy aggrty = cast(AggregateTy)domType;
+			if (!aggrty) aggrty = isDataTyId(domType);
 			// parameterised AggregateTy return types are also fine
-			if (auto aggrty = cast(AggregateTy)domType) {
+			if (aggrty) {
 				if (aggrty.isParameterized) {
 					// use type-constraint param[A] manifold
 					tangentVecTy = parameterSetTy(aggrty, sc).tangentVecTy(sc);

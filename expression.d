@@ -465,7 +465,9 @@ class Identifier: Expression{
 
 	override Expression evalImpl(Expression ntype){
 		if(ntype==type) return this;
-		return new Identifier(name);
+		auto id = new Identifier(name);
+		id.meaning = meaning;
+		return id;
 	}
 	override bool isConstant(){
 		if(substitute){

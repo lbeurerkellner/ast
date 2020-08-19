@@ -125,6 +125,9 @@ abstract class AstVisitor(T) {
     T handleImportExp(ImportExp importExp) {
         return handleUnsupportedExp(importExp);
     }
+    T handleNoGradExp(NoGradExp nogradExp) {
+        return handleUnsupportedExp(nogradExp);
+    }
 
     T visit(Expression expr) {
         if (expr is null) { 
@@ -200,6 +203,8 @@ abstract class AstVisitor(T) {
             return this.handleCommentExp(commentExp);
         } else if (auto funExp = cast(InitializedFunctionExp)expr) {
             return this.handleInitializedFunctionExp(funExp);
+        } else if (auto noGradExp = cast(NoGradExp)expr) {
+            return this.handleNoGradExp(noGradExp);
         } else {
             return this.handleUnsupportedExp(expr);
         }
