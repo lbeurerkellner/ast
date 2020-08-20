@@ -3799,6 +3799,12 @@ static if(language==dp) FunctionDef pullbackSemantic(FunctionDef fd, Scope sc) {
 		return fd;
 	}
 
+	if (primal.isParameterized) {
+		sc.error(format("cannot define explicit pullback for parameterized function (declare %s as noparam).", 
+			fd.primalName.toString), fd.loc);	
+		return fd;
+	}
+
 	// establish linking of functions
 	auto linkSuccess = linkAdjointPrimalFunctionDef(functionDefSemantic(primal, sc), fd);
 	if (!linkSuccess) {
