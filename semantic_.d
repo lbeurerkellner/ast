@@ -3091,15 +3091,21 @@ Expression expressionSemantic(Expression expr,Scope sc,ConstResult constResult){
 			prodTy.isTuple, prodTy.annotation, prodTy.isClassical, false, false, prodTy.isDifferentiable);
 	}
 	if(auto ndt=cast(NonDiffTypeExp)expr){
+		// handle case of nondiff lambda expressions
+		if (auto le = cast(LambdaExp)ndt.e) {
+			le.fd.isDifferentiable = false;
+			return expr=expressionSemantic(ndt.e, sc, ConstResult.yes);
+		}
+		// handle nondiff as type operator
 		ndt.e = expressionSemantic(ndt.e, sc, ConstResult.yes);
-		ProductTy prodTy = cast(ProductTy)ndt.e;
-		if (!prodTy) {
-			sc.error("operator nondiff can only be applied to function type expressions", ndt.loc);
+		if (ProductTy prodTy = cast(ProductTy)ndt.e) {
+			return expr=productTy(prodTy.isConst, prodTy.names, prodTy.dom, prodTy.cod, prodTy.isSquare,
+				prodTy.isTuple, prodTy.annotation, prodTy.isClassical, prodTy.isParameterized, prodTy.isInitialized, false);
+		} else {
+			sc.error("operator nondiff can only be applied to function type or lambda expressions", ndt.loc);
 			ndt.sstate = SemState.error;
 			return ndt;
 		}
-		return expr=productTy(prodTy.isConst, prodTy.names, prodTy.dom, prodTy.cod, prodTy.isSquare,
-			prodTy.isTuple, prodTy.annotation, prodTy.isClassical, prodTy.isParameterized, prodTy.isInitialized, false);
 	}
 	if (auto unparamExp=cast(UnparamExp)expr) {
 		unparamExp.e = expressionSemantic(unparamExp.e, sc, ConstResult.yes);
@@ -3629,6 +3635,7 @@ Expression[] findDimExprs(Expression shapeExpression, Scope sc) {
 bool setFtype(FunctionDef fd){
 	if(fd.ftype) return true;
 	if(!fd.ret) return false;
+
 	bool[] pc;
 	string[] pn;
 	Expression[] pty;
@@ -3650,9 +3657,12 @@ bool setFtype(FunctionDef fd){
 		bool returnTypeIsNonDifferentiableFunction=retFun&&!retFun.isDifferentiable;
 		bool isDifferentiable = fd.isDifferentiable&&!returnTypeIsNonDifferentiableFunction;
 
+		// lambdas are always initialised, top-level function defs are not
+		bool isInitialized = fd.isExplicitLambda;
+
 		fd.ftype=productTy(pc,pn,pt,fd.ret,fd.isSquare,fd.isTuple,
 							fd.annotation,!fd.context||fd.context.vtype==contextTy(true), 
-							!fd.isSquare&&fd.isParameterized, false, isDifferentiable);
+							!fd.isSquare&&fd.isParameterized, isInitialized, isDifferentiable);
 		fd.isDifferentiable = isDifferentiable;
 	} else {
 		fd.ftype=productTy(pc,pn,pt,fd.ret,fd.isSquare,fd.isTuple,

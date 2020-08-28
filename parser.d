@@ -462,7 +462,9 @@ struct Parser{
 						case Tok!"{",Tok!"⇒",Tok!"↦",Tok!"=>":
 						static if(language==silq) case Tok!"lifted",Tok!"qfree",Tok!"mfree":{}
 							restoreState(state);
-							return parseLambdaExp!(false, FunctionAnnotation.noparam)();
+							auto le=parseLambdaExp!(false)();
+							le.fd.isExplicitLambda=true;
+							return le;
 						default: break;
 					}
 					restoreState(state);

@@ -144,6 +144,7 @@ class FunctionDef: Declaration{
 		bool isPullback = false;
 		bool isManifoldOp = false;
 		bool isDifferentiable = true;
+		bool isExplicitLambda = false;
 
 		Identifier primalName=null;
 		FunctionDef primal=null;
