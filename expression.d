@@ -1678,9 +1678,9 @@ class BinaryPullbackCallExp: Expression {
 	}
 
 	override string toString() {
-		return "pull " ~ op ~ "(" ~ [v, e1, e2].map!((Expression e){
+		return "pull " ~ op ~ "[" ~ [e1, e2].map!((Expression e){
 			return e !is null ? e.toString : "null";
-		}).join(", ") ~ ")";
+		}).join(", ") ~ "](" ~ ((v is null) ? "null" : v.toString) ~ ")";
 	}
 
 	override Expression copyImpl(CopyArgs args) {
